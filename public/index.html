@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ARC — Connect Beyond Space</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #040508;
+      --surface: #0a0d14;
+      --surface2: #111622;
+      --cyan: #00e5ff;
+      --cyan-dim: #00b8cc;
+      --cyan-glow: rgba(0,229,255,0.15);
+      --text: #e8eaf0;
+      --text-muted: #6b7280;
+      --border: rgba(0,229,255,0.12);
+      --radius: 16px;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      overflow: hidden;
+    }
+
+    /* ── CANVAS BACKGROUND ── */
+    #bg-canvas {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+    }
+
+    /* ── MAIN LAYOUT ── */
+    .page {
+      position: relative;
+      z-index: 1;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0;
+      padding: 2rem;
+    }
+
+    /* ── LOGO ── */
+    .logo-wrap {
+      text-align: center;
+      margin-bottom: 3.5rem;
+      animation: fadeUp 0.8s cubic-bezier(0.16,1,0.3,1) both;
+    }
+    .logo-arc {
+      font-family: 'Orbitron', monospace;
+      font-weight: 900;
+      font-size: clamp(4rem, 12vw, 8rem);
+      letter-spacing: 0.25em;
+      line-height: 1;
+      background: linear-gradient(135deg, #fff 0%, var(--cyan) 60%, #0088aa 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      position: relative;
+      text-shadow: none;
+    }
+    .logo-arc::after {
+      content: 'ARC';
+      position: absolute;
+      inset: 0;
+      font-family: 'Orbitron', monospace;
+      font-weight: 900;
+      background: linear-gradient(135deg, #fff 0%, var(--cyan) 60%, #0088aa 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      filter: blur(20px);
+      opacity: 0.5;
+    }
+    .logo-tagline {
+      font-family: 'DM Sans', sans-serif;
+      font-weight: 300;
+      font-size: 0.85rem;
+      letter-spacing: 0.35em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-top: 0.75rem;
+    }
+
+    /* ── CARDS CONTAINER ── */
+    .cards {
+      display: flex;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+      justify-content: center;
+      animation: fadeUp 0.8s 0.15s cubic-bezier(0.16,1,0.3,1) both;
+    }
+
+    .card {
+      position: relative;
+      width: 280px;
+      padding: 2.5rem 2rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+      overflow: hidden;
+      text-align: center;
+    }
+    .card::before {
+      content: '';
+      position: absolute;
+      inset: -1px;
+      border-radius: calc(var(--radius) + 1px);
+      background: linear-gradient(135deg, var(--cyan), transparent 60%);
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      z-index: 0;
+      mask: linear-gradient(#000,#000) content-box, linear-gradient(#000,#000);
+      mask-composite: exclude;
+      padding: 1px;
+    }
+    .card:hover::before { opacity: 1; }
+    .card:hover {
+      transform: translateY(-6px);
+      border-color: rgba(0,229,255,0.4);
+      box-shadow: 0 20px 60px rgba(0,229,255,0.12), 0 0 0 1px rgba(0,229,255,0.1);
+    }
+
+    .card-icon {
+      width: 64px;
+      height: 64px;
+      margin: 0 auto 1.5rem;
+      position: relative;
+      z-index: 1;
+    }
+    .card-icon svg { width: 100%; height: 100%; }
+
+    .card-title {
+      font-family: 'Orbitron', monospace;
+      font-weight: 700;
+      font-size: 1rem;
+      letter-spacing: 0.12em;
+      color: var(--text);
+      margin-bottom: 0.6rem;
+      position: relative;
+      z-index: 1;
+    }
+    .card-desc {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+      position: relative;
+      z-index: 1;
+    }
+
+    .card-btn {
+      display: inline-block;
+      margin-top: 1.75rem;
+      padding: 0.65rem 1.75rem;
+      border-radius: 50px;
+      font-family: 'DM Sans', sans-serif;
+      font-size: 0.82rem;
+      font-weight: 500;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s ease;
+      position: relative;
+      z-index: 1;
+    }
+    .card-btn.primary {
+      background: var(--cyan);
+      color: #040508;
+    }
+    .card-btn.primary:hover { background: #33eeff; box-shadow: 0 0 24px rgba(0,229,255,0.4); }
+    .card-btn.secondary {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--cyan);
+    }
+    .card-btn.secondary:hover { background: var(--cyan-glow); border-color: var(--cyan); }
+
+    /* ── MODAL ── */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(4,5,8,0.85);
+      backdrop-filter: blur(12px);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+    }
+    .modal-overlay.active {
+      opacity: 1;
+      pointer-events: all;
+    }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 2.5rem;
+      width: 100%;
+      max-width: 440px;
+      transform: translateY(20px) scale(0.97);
+      transition: transform 0.3s cubic-bezier(0.16,1,0.3,1);
+      position: relative;
+    }
+    .modal-overlay.active .modal { transform: translateY(0) scale(1); }
+
+    .modal-close {
+      position: absolute;
+      top: 1rem;
+      right: 1rem;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 0.25rem;
+      line-height: 1;
+      font-size: 1.3rem;
+      transition: color 0.2s;
+    }
+    .modal-close:hover { color: var(--text); }
+
+    .modal-title {
+      font-family: 'Orbitron', monospace;
+      font-weight: 700;
+      font-size: 1.1rem;
+      letter-spacing: 0.1em;
+      margin-bottom: 0.4rem;
+      color: var(--cyan);
+    }
+    .modal-sub {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      margin-bottom: 2rem;
+      line-height: 1.5;
+    }
+
+    .input-group {
+      margin-bottom: 1.1rem;
+    }
+    .input-group label {
+      display: block;
+      font-size: 0.72rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+    }
+    .input-group input {
+      width: 100%;
+      padding: 0.85rem 1rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 0.95rem;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      outline: none;
+    }
+    .input-group input:focus {
+      border-color: var(--cyan);
+      box-shadow: 0 0 0 3px rgba(0,229,255,0.08);
+    }
+    .input-group input.code-input {
+      font-family: 'Orbitron', monospace;
+      font-size: 1.1rem;
+      letter-spacing: 0.15em;
+      text-align: center;
+      text-transform: uppercase;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 0.75rem;
+      margin-top: 1.5rem;
+    }
+    .modal-actions button {
+      flex: 1;
+      padding: 0.8rem;
+      border-radius: 10px;
+      font-family: 'DM Sans', sans-serif;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s;
+    }
+    .btn-create {
+      background: var(--surface2);
+      border: 1px solid var(--border) !important;
+      color: var(--text);
+    }
+    .btn-create:hover { border-color: rgba(0,229,255,0.4) !important; color: var(--cyan); }
+    .btn-join {
+      background: var(--cyan);
+      color: #040508;
+      font-weight: 600;
+    }
+    .btn-join:hover { background: #33eeff; box-shadow: 0 0 20px rgba(0,229,255,0.35); }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin: 1.25rem 0;
+    }
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+    .divider span {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    .msg-error {
+      color: #ff6b6b;
+      font-size: 0.78rem;
+      margin-top: 0.5rem;
+      display: none;
+    }
+    .msg-error.show { display: block; }
+
+    /* ── FOOTER ── */
+    .footer {
+      position: fixed;
+      bottom: 1.5rem;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      letter-spacing: 0.08em;
+      animation: fadeUp 1s 0.4s both;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(24px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── PULSE RING on world card ── */
+    .pulse-ring {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      border: 1px solid rgba(0,229,255,0.4);
+      animation: pulse 2s ease-out infinite;
+      pointer-events: none;
+    }
+    .pulse-ring:nth-child(2) { animation-delay: 0.7s; }
+    .pulse-ring:nth-child(3) { animation-delay: 1.4s; }
+    @keyframes pulse {
+      0%   { transform: translate(-50%,-50%) scale(1); opacity: 0.7; }
+      100% { transform: translate(-50%,-50%) scale(2.5); opacity: 0; }
+    }
+
+    @media (max-width: 600px) {
+      .cards { flex-direction: column; align-items: center; }
+    }
+  </style>
+</head>
+<body>
+
+<canvas id="bg-canvas"></canvas>
+
+<main class="page">
+  <div class="logo-wrap">
+    <div class="logo-arc">ARC</div>
+    <div class="logo-tagline">Augmented Reality Conferencing</div>
+  </div>
+
+  <div class="cards">
+    <!-- GUEST CARD -->
+    <div class="card" onclick="openGuestModal()">
+      <div class="card-icon">
+        <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="32" cy="22" r="10" stroke="#00e5ff" stroke-width="2"/>
+          <path d="M10 54c0-12.15 9.85-22 22-22s22 9.85 22 22" stroke="#00e5ff" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="52" cy="16" r="5" fill="rgba(0,229,255,0.15)" stroke="#00e5ff" stroke-width="1.5"/>
+          <path d="M49 16h6M52 13v6" stroke="#00e5ff" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="card-title">Join as a Guest</div>
+      <div class="card-desc">Enter a room code to join an existing session, or create a new one instantly.</div>
+      <button class="card-btn primary">Enter ARC</button>
+    </div>
+
+    <!-- WORLD CARD -->
+    <div class="card" onclick="openWorldModal()">
+      <div class="card-icon" style="position:relative;">
+        <div class="pulse-ring"></div>
+        <div class="pulse-ring"></div>
+        <div class="pulse-ring"></div>
+        <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" style="position:relative;z-index:1;">
+          <circle cx="32" cy="32" r="20" stroke="#00e5ff" stroke-width="2"/>
+          <ellipse cx="32" cy="32" rx="10" ry="20" stroke="#00e5ff" stroke-width="1.5" opacity="0.5"/>
+          <line x1="12" y1="32" x2="52" y2="32" stroke="#00e5ff" stroke-width="1.5" opacity="0.5"/>
+          <line x1="32" y1="12" x2="32" y2="52" stroke="#00e5ff" stroke-width="1.5" opacity="0.3"/>
+          <circle cx="32" cy="32" r="4" fill="#00e5ff" opacity="0.8"/>
+        </svg>
+      </div>
+      <div class="card-title">Share a World</div>
+      <div class="card-desc">Use your camera to create a living, breathing world that appears as the room's background.</div>
+      <button class="card-btn secondary">Broadcast World</button>
+    </div>
+  </div>
+</main>
+
+<div class="footer">© 2025 ARC — All frequencies open</div>
+
+<!-- GUEST MODAL -->
+<div class="modal-overlay" id="guestModal">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('guestModal')">✕</button>
+    <div class="modal-title">Join a Session</div>
+    <div class="modal-sub">Enter a room code to join an existing ARC session.</div>
+
+    <div class="input-group">
+      <label>Your Display Name</label>
+      <input type="text" id="guestName" placeholder="e.g. Alex Chen" maxlength="30" />
+    </div>
+
+    <div class="input-group">
+      <label>Room Code</label>
+      <input type="text" id="roomCodeInput" class="code-input" placeholder="XXX-XXX-XXX" maxlength="11" />
+      <div class="msg-error" id="roomError">Room not found. Check the code and try again.</div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn-create" onclick="handleCreate()">+ New Room</button>
+      <button class="btn-join" onclick="handleJoin()">Join →</button>
+    </div>
+
+    <div class="divider"><span>or</span></div>
+    <div style="text-align:center;font-size:0.78rem;color:var(--text-muted);">
+      Share the room code with others after you create a session.
+    </div>
+  </div>
+</div>
+
+<!-- WORLD MODAL -->
+<div class="modal-overlay" id="worldModal">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('worldModal')">✕</button>
+    <div class="modal-title">Share a World</div>
+    <div class="modal-sub">Your camera feed becomes the ambient background for everyone in the room.</div>
+
+    <div class="input-group">
+      <label>Room Code to Broadcast Into</label>
+      <input type="text" id="worldRoomCode" class="code-input" placeholder="XXX-XXX-XXX" maxlength="11" />
+      <div class="msg-error" id="worldError">Room not found. Ask the host for the code.</div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn-join" onclick="handleWorldShare()" style="flex:1;">Begin Broadcasting →</button>
+    </div>
+
+    <div style="margin-top:1.25rem;padding:1rem;background:var(--surface2);border-radius:10px;font-size:0.78rem;color:var(--text-muted);line-height:1.6;">
+      📡 Your camera will stream live as the visual world background for all participants. Camera permission will be requested.
+    </div>
+  </div>
+</div>
+
+<script>
+  // ── ANIMATED BACKGROUND ──
+  const canvas = document.getElementById('bg-canvas');
+  const ctx = canvas.getContext('2d');
+
+  let W, H, particles = [], arcs = [];
+
+  function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+  }
+
+  class Particle {
+    constructor() { this.reset(); }
+    reset() {
+      this.x = Math.random() * W;
+      this.y = Math.random() * H;
+      this.r = Math.random() * 1.2 + 0.3;
+      this.vx = (Math.random() - 0.5) * 0.15;
+      this.vy = (Math.random() - 0.5) * 0.15;
+      this.alpha = Math.random() * 0.6 + 0.1;
+    }
+    update() {
+      this.x += this.vx; this.y += this.vy;
+      if (this.x < 0 || this.x > W || this.y < 0 || this.y > H) this.reset();
+    }
+    draw() {
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(0,229,255,${this.alpha})`;
+      ctx.fill();
+    }
+  }
+
+  class Arc {
+    constructor() { this.reset(); }
+    reset() {
+      this.cx = Math.random() * W;
+      this.cy = Math.random() * H + H * 0.3;
+      this.r = Math.random() * 300 + 150;
+      this.startAngle = Math.PI + Math.random() * Math.PI;
+      this.endAngle = this.startAngle + Math.random() * Math.PI * 0.8 + 0.3;
+      this.speed = (Math.random() * 0.0003 + 0.0001) * (Math.random() < 0.5 ? 1 : -1);
+      this.alpha = Math.random() * 0.07 + 0.02;
+      this.width = Math.random() * 1.5 + 0.5;
+    }
+    update() {
+      this.startAngle += this.speed;
+      this.endAngle += this.speed;
+    }
+    draw() {
+      ctx.beginPath();
+      ctx.arc(this.cx, this.cy, this.r, this.startAngle, this.endAngle);
+      ctx.strokeStyle = `rgba(0,229,255,${this.alpha})`;
+      ctx.lineWidth = this.width;
+      ctx.stroke();
+    }
+  }
+
+  function init() {
+    resize();
+    particles = Array.from({length: 120}, () => new Particle());
+    arcs = Array.from({length: 8}, () => new Arc());
+  }
+
+  function loop() {
+    ctx.clearRect(0, 0, W, H);
+
+    // Radial glow from center
+    const grd = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, W * 0.7);
+    grd.addColorStop(0, 'rgba(0,40,60,0.3)');
+    grd.addColorStop(1, 'rgba(4,5,8,0)');
+    ctx.fillStyle = grd;
+    ctx.fillRect(0, 0, W, H);
+
+    arcs.forEach(a => { a.update(); a.draw(); });
+    particles.forEach(p => { p.update(); p.draw(); });
+
+    // Draw connecting lines between close particles
+    for (let i = 0; i < particles.length; i++) {
+      for (let j = i + 1; j < particles.length; j++) {
+        const dx = particles[i].x - particles[j].x;
+        const dy = particles[i].y - particles[j].y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist < 80) {
+          ctx.beginPath();
+          ctx.moveTo(particles[i].x, particles[i].y);
+          ctx.lineTo(particles[j].x, particles[j].y);
+          ctx.strokeStyle = `rgba(0,229,255,${0.06 * (1 - dist/80)})`;
+          ctx.lineWidth = 0.5;
+          ctx.stroke();
+        }
+      }
+    }
+
+    requestAnimationFrame(loop);
+  }
+
+  init();
+  loop();
+  window.addEventListener('resize', init);
+
+  // ── MODALS ──
+  function openGuestModal() {
+    document.getElementById('guestModal').classList.add('active');
+    setTimeout(() => document.getElementById('guestName').focus(), 300);
+  }
+  function openWorldModal() {
+    document.getElementById('worldModal').classList.add('active');
+    setTimeout(() => document.getElementById('worldRoomCode').focus(), 300);
+  }
+  function closeModal(id) {
+    document.getElementById(id).classList.remove('active');
+  }
+
+  // Close on overlay click
+  document.querySelectorAll('.modal-overlay').forEach(el => {
+    el.addEventListener('click', e => { if (e.target === el) closeModal(el.id); });
+  });
+
+  // Auto-format room code input (adds dashes)
+  function formatCode(input) {
+    let v = input.value.replace(/[^A-Z0-9a-z]/g, '').toUpperCase().slice(0, 9);
+    let out = '';
+    for (let i = 0; i < v.length; i++) {
+      if (i === 3 || i === 6) out += '-';
+      out += v[i];
+    }
+    input.value = out;
+  }
+
+  document.getElementById('roomCodeInput').addEventListener('input', function() { formatCode(this); });
+  document.getElementById('worldRoomCode').addEventListener('input', function() { formatCode(this); });
+
+  // ── ACTIONS ──
+  async function handleCreate() {
+    const name = document.getElementById('guestName').value.trim() || 'Guest';
+    const res = await fetch('/api/create-room', { method: 'POST' });
+    const { roomId } = await res.json();
+    window.location.href = `/meeting.html?room=${roomId}&name=${encodeURIComponent(name)}`;
+  }
+
+  async function handleJoin() {
+    const name = document.getElementById('guestName').value.trim() || 'Guest';
+    const code = document.getElementById('roomCodeInput').value.trim().toUpperCase();
+    const errEl = document.getElementById('roomError');
+
+    if (!code || code.replace(/-/g,'').length < 9) {
+      errEl.textContent = 'Please enter a valid 9-character room code.';
+      errEl.classList.add('show');
+      return;
+    }
+
+    const res = await fetch(`/api/room/${code}`);
+    const data = await res.json();
+
+    if (!data.exists) {
+      // Auto-create if code looks valid
+      errEl.textContent = 'Room not found. Create one first or check the code.';
+      errEl.classList.add('show');
+      return;
+    }
+
+    errEl.classList.remove('show');
+    window.location.href = `/meeting.html?room=${code}&name=${encodeURIComponent(name)}`;
+  }
+
+  async function handleWorldShare() {
+    const code = document.getElementById('worldRoomCode').value.trim().toUpperCase();
+    const errEl = document.getElementById('worldError');
+
+    if (!code || code.replace(/-/g,'').length < 9) {
+      errEl.textContent = 'Please enter a valid room code.';
+      errEl.classList.add('show');
+      return;
+    }
+
+    const res = await fetch(`/api/room/${code}`);
+    const data = await res.json();
+
+    if (!data.exists) {
+      errEl.textContent = 'Room not found. The host must create a session first.';
+      errEl.classList.add('show');
+      return;
+    }
+
+    errEl.classList.remove('show');
+    window.location.href = `/world.html?room=${code}`;
+  }
+
+  // Enter key support
+  document.getElementById('roomCodeInput').addEventListener('keydown', e => { if (e.key === 'Enter') handleJoin(); });
+  document.getElementById('worldRoomCode').addEventListener('keydown', e => { if (e.key === 'Enter') handleWorldShare(); });
+  document.getElementById('guestName').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('roomCodeInput').focus(); });
+</script>
+</body>
+</html>
