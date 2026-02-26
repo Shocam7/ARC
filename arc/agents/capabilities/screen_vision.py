@@ -1,52 +1,51 @@
 """
-ScreenVision capability — Screenshot analysis using Gemini Flash.
+ScreenVisionCapability — Screenshot analysis using gemini-2.5-flash.
+
+Upgraded from gemini-2.0-flash:
+- Better spatial understanding and UI element recognition
+- Improved OCR of on-screen text
+- More reliable bounding box coordinates for element location
 """
 
 import base64
+import io
 import logging
-import os
 from typing import Optional
 
 logger = logging.getLogger("arc.capabilities.screen")
 
 try:
-    import pyautogui
-    from PIL import ImageGrab
     import pygetwindow as gw
+    from PIL import ImageGrab
     _SCREEN_AVAILABLE = True
 except ImportError:
     _SCREEN_AVAILABLE = False
-    logger.warning("pyautogui/PIL not available — screen vision disabled")
+    logger.warning("PIL/pygetwindow not available — screen vision disabled")
+
+from arc.core.models import VISION_MODEL
 
 
-def _capture_active_window() -> Optional[bytes]:
-    """Capture the currently active window as JPEG bytes."""
+def _capture_jpeg(quality: int = 82) -> Optional[tuple[bytes, int, int]]:
     if not _SCREEN_AVAILABLE:
         return None
     try:
         win = gw.getActiveWindow()
-        if win:
-            img = ImageGrab.grab(bbox=(
-                win.left, win.top,
-                win.left + win.width,
-                win.top + win.height
-            ))
-        else:
-            img = ImageGrab.grab()
-        # Convert to JPEG bytes
-        import io
+        bbox = (win.left, win.top, win.left + win.width, win.top + win.height) if win else None
+        img = ImageGrab.grab(bbox=bbox)
+        w, h = img.size
         buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="JPEG", quality=80)
-        return buf.getvalue()
+        img.convert("RGB").save(buf, format="JPEG", quality=quality)
+        return buf.getvalue(), w, h
     except Exception as e:
-        logger.error(f"Screen capture failed: {e}")
+        logger.error(f"Capture failed: {e}")
         return None
 
 
 class ScreenVisionCapability:
     """
-    Provides screen analysis tools for an AF agent.
-    Uses Gemini Flash vision to understand and describe screen content.
+    Analyses screenshots with gemini-2.5-flash.
+    For interactive screen control (clicking, typing) use ComputerUseCapability.
+    This capability is for read-only understanding of screen content.
     """
 
     def __init__(self, api_key: str):
@@ -57,124 +56,51 @@ class ScreenVisionCapability:
                 from google import genai
                 self._client = genai.Client(api_key=api_key)
             except Exception as e:
-                logger.error(f"Failed to init Gemini client: {e}")
+                logger.error(f"Vision client init failed: {e}")
 
-    def look_at_screen(self, question: str = "What do you see on screen?") -> str:
+    def look_at_screen(self, question: str = "What do you see?") -> str:
         """
-        Take a screenshot of the active window and analyze it with Gemini Flash.
-        
+        Capture the active window and analyse it with gemini-2.5-flash.
+
         Args:
-            question: What to look for or analyze on the screen.
+            question: What to look for or describe on screen.
         Returns:
-            Description of what's on screen relevant to the question.
+            Detailed description relevant to the question.
         """
         if not _SCREEN_AVAILABLE:
             return "Screen capture not available."
-        
-        img_bytes = _capture_active_window()
-        if not img_bytes:
+        capture = _capture_jpeg()
+        if not capture:
             return "Could not capture screen."
+        jpeg_bytes, w, h = capture
 
         if not self._client:
-            return "Vision model not available (no API key)."
+            return "Vision model not available."
 
         try:
-            from google.genai import types as genai_types
-            img_b64 = base64.b64encode(img_bytes).decode()
+            from google.genai import types as gt
+            img_b64 = base64.b64encode(jpeg_bytes).decode()
+            win_title = gw.getActiveWindowTitle() or "unknown"
             response = self._client.models.generate_content(
-                model="gemini-2.0-flash",
+                model=VISION_MODEL,
                 contents=[
-                    genai_types.Part(
-                        inline_data=genai_types.Blob(
-                            data=img_b64,
-                            mime_type="image/jpeg"
-                        )
-                    ),
-                    genai_types.Part(text=f"""
-                        Analyze this screenshot carefully.
-                        Question: {question}
-                        
-                        Describe what you see in detail, focusing on answering the question.
-                        Include: what application is open, key UI elements visible,
-                        any text content on screen, and any relevant details.
-                        Be concise but thorough.
-                    """)
-                ]
+                    gt.Part(inline_data=gt.Blob(data=img_b64, mime_type="image/jpeg")),
+                    gt.Part(text=(
+                        f"Active window: {win_title}\n"
+                        f"Question: {question}\n\n"
+                        "Describe what you see in detail, focusing on answering the question. "
+                        "Include: application name, key UI elements, visible text content, "
+                        "and any relevant details. Be thorough but concise."
+                    )),
+                ],
+                config={"temperature": 0.2, "max_output_tokens": 1024}
             )
             return response.text or "No description available."
         except Exception as e:
-            logger.error(f"Vision analysis failed: {e}")
-            return f"Vision analysis error: {e}"
-
-    def find_element_coordinates(self, element_description: str) -> Optional[tuple]:
-        """
-        Find an on-screen element and return its (x, y) center coordinates.
-        Uses Gemini vision to locate the element via bounding box.
-        
-        Args:
-            element_description: Description of the UI element to find.
-        Returns:
-            (x, y) screen coordinates or None if not found.
-        """
-        if not _SCREEN_AVAILABLE or not self._client:
-            return None
-
-        img_bytes = _capture_active_window()
-        if not img_bytes:
-            return None
-
-        try:
-            from google.genai import types as genai_types
-            import pygetwindow as gw
-            import pyautogui
-
-            win = gw.getActiveWindow()
-            win_left = win.left if win else 0
-            win_top = win.top if win else 0
-
-            from PIL import Image
-            import io
-            img = Image.open(io.BytesIO(img_bytes))
-            img_w, img_h = img.size
-
-            img_b64 = base64.b64encode(img_bytes).decode()
-            response = self._client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=[
-                    genai_types.Part(
-                        inline_data=genai_types.Blob(
-                            data=img_b64,
-                            mime_type="image/jpeg"
-                        )
-                    ),
-                    genai_types.Part(text=f"""
-                        Find this element: {element_description}
-                        
-                        Return ONLY a bounding box in format: [ymin, xmin, ymax, xmax]
-                        Use normalized coordinates from 0 to 1000.
-                        Example: [250, 100, 350, 400]
-                        Return ONLY the array, no other text.
-                    """)
-                ]
-            )
-            text = response.text.strip()
-            text = text.replace("[", "").replace("]", "")
-            coords = [float(x.strip()) for x in text.split(",")]
-            if len(coords) != 4:
-                return None
-
-            ymin, xmin, ymax, xmax = coords
-            # Convert from 0-1000 normalized to screen pixels
-            px_x = (xmin + (xmax - xmin) / 2) / 1000 * img_w + win_left
-            px_y = (ymin + (ymax - ymin) / 2) / 1000 * img_h + win_top
-            return (int(px_x), int(px_y))
-
-        except Exception as e:
-            logger.error(f"Element location failed: {e}")
-            return None
+            logger.error(f"Vision failed: {e}")
+            return f"Vision error: {e}"
 
     def get_active_window_title(self) -> str:
-        """Return the title of the currently active window."""
         if not _SCREEN_AVAILABLE:
             return "unknown"
         try:
@@ -183,63 +109,28 @@ class ScreenVisionCapability:
             return "unknown"
 
     def get_adk_tools(self) -> list:
-        """Return ADK-compatible function declarations."""
-        from google.genai import types as genai_types
+        from google.genai import types as gt
         return [
-            genai_types.FunctionDeclaration(
+            gt.FunctionDeclaration(
                 name="look_at_screen",
                 description=(
-                    "Take a screenshot of the active window and analyze what's on screen. "
-                    "Use this to understand the current state of the user's computer."
+                    "Take a screenshot of the active window and analyse what's on screen "
+                    "using Gemini 2.5 Flash vision. Use this to understand the current "
+                    "state of the user's computer before deciding what to do."
                 ),
-                parameters=genai_types.Schema(
-                    type=genai_types.Type.OBJECT,
+                parameters=gt.Schema(
+                    type=gt.Type.OBJECT,
                     properties={
-                        "question": genai_types.Schema(
-                            type=genai_types.Type.STRING,
-                            description="What to look for or analyze on the screen"
+                        "question": gt.Schema(
+                            type=gt.Type.STRING,
+                            description="What to look for or analyse on the screen"
                         )
                     }
-                )
-            ),
-            genai_types.FunctionDeclaration(
-                name="find_and_click_element",
-                description="Find a UI element on screen by description and click it.",
-                parameters=genai_types.Schema(
-                    type=genai_types.Type.OBJECT,
-                    properties={
-                        "element_description": genai_types.Schema(
-                            type=genai_types.Type.STRING,
-                            description="Description of the UI element to find and click"
-                        ),
-                        "click_type": genai_types.Schema(
-                            type=genai_types.Type.STRING,
-                            description="'left', 'double', or 'right'"
-                        )
-                    },
-                    required=["element_description"]
                 )
             ),
         ]
 
     def handle_tool_call(self, name: str, args: dict) -> str:
-        """Dispatch a tool call."""
         if name == "look_at_screen":
             return self.look_at_screen(args.get("question", "What do you see?"))
-        elif name == "find_and_click_element":
-            desc = args.get("element_description", "")
-            click_type = args.get("click_type", "left")
-            coords = self.find_element_coordinates(desc)
-            if coords:
-                if _SCREEN_AVAILABLE:
-                    pyautogui.moveTo(coords[0], coords[1], duration=0.2)
-                    if click_type == "double":
-                        pyautogui.doubleClick(*coords)
-                    elif click_type == "right":
-                        pyautogui.rightClick(*coords)
-                    else:
-                        pyautogui.click(*coords)
-                    return f"Clicked {desc} at {coords}"
-                return f"Found {desc} at {coords} but cannot click (pyautogui unavailable)"
-            return f"Could not find element: {desc}"
         return f"Unknown screen tool: {name}"
