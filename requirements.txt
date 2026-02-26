@@ -1,0 +1,35 @@
+# ─── ARC Requirements ─────────────────────────────────────────────────────────
+# Python >= 3.11 recommended
+
+# ── Google AI / ADK ───────────────────────────────────────────────────────────
+google-genai>=0.8.0           # Gemini Live API + Flash models
+google-adk>=0.1.0             # Google Agent Development Kit (multi-agent)
+google-auth>=2.20.0
+google-cloud-speech>=2.20.0   # Optional: Cloud STT fallback
+
+# ── PyQt6 UI ──────────────────────────────────────────────────────────────────
+PyQt6>=6.6.0
+PyQt6-Qt6>=6.6.0
+PyQt6-sip>=13.6.0
+
+# ── Computer Vision / Screen ──────────────────────────────────────────────────
+opencv-python>=4.9.0          # Webcam capture in UserTile
+Pillow>=10.2.0                # Screenshot capture + image processing
+pygetwindow>=0.0.9            # Active window detection
+
+# ── Input Automation ──────────────────────────────────────────────────────────
+pyautogui>=0.9.54             # Mouse/keyboard automation
+keyboard>=0.13.5              # Keyboard input (requires admin on Linux)
+
+# ── Audio ─────────────────────────────────────────────────────────────────────
+pyaudio>=0.2.14               # Real-time microphone + speaker I/O
+
+# ── Web Automation ────────────────────────────────────────────────────────────
+selenium>=4.18.0              # Chrome automation
+beautifulsoup4>=4.12.0        # HTML parsing
+webdriver-manager>=4.0.0      # Auto-download ChromeDriver
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0          # Load .env file
+requests>=2.31.0
+chardet>=5.2.0
