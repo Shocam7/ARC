@@ -1,35 +1,36 @@
-# ─── ARC Requirements ─────────────────────────────────────────────────────────
-# Python >= 3.11 recommended
+# ─── ARC v2 Requirements ──────────────────────────────────────────────────────
+# Python >= 3.11 required (3.12 recommended)
+# All dependencies are free / open source or part of Google's free tier.
 
-# ── Google AI / ADK ───────────────────────────────────────────────────────────
-google-genai>=0.8.0           # Gemini Live API + Flash models
-google-adk>=0.1.0             # Google Agent Development Kit (multi-agent)
-google-auth>=2.20.0
-google-cloud-speech>=2.20.0   # Optional: Cloud STT fallback
+# ── Google AI SDK (includes Gemini Live API + ADK support) ────────────────────
+google-genai>=1.0.0             # Unified Gemini SDK — Live API, Flash, Pro, Computer Use
+google-adk>=0.3.0               # Google Agent Development Kit
+google-auth>=2.28.0
+google-cloud-aiplatform>=1.50.0 # Optional: Vertex AI backend
 
 # ── PyQt6 UI ──────────────────────────────────────────────────────────────────
-PyQt6>=6.6.0
-PyQt6-Qt6>=6.6.0
-PyQt6-sip>=13.6.0
+PyQt6>=6.7.0
+PyQt6-Qt6>=6.7.0
+PyQt6-sip>=13.8.0
 
 # ── Computer Vision / Screen ──────────────────────────────────────────────────
-opencv-python>=4.9.0          # Webcam capture in UserTile
-Pillow>=10.2.0                # Screenshot capture + image processing
-pygetwindow>=0.0.9            # Active window detection
+opencv-python>=4.9.0            # Webcam capture (UserTile)
+Pillow>=10.3.0                  # Screenshot capture + JPEG encoding
+pygetwindow>=0.0.9              # Active window detection + bounding box
 
 # ── Input Automation ──────────────────────────────────────────────────────────
-pyautogui>=0.9.54             # Mouse/keyboard automation
-keyboard>=0.13.5              # Keyboard input (requires admin on Linux)
+pyautogui>=0.9.54               # Mouse + keyboard automation
+keyboard>=0.13.5                # Low-level keyboard events (requires admin on Linux)
 
-# ── Audio ─────────────────────────────────────────────────────────────────────
-pyaudio>=0.2.14               # Real-time microphone + speaker I/O
+# ── Audio I/O ─────────────────────────────────────────────────────────────────
+pyaudio>=0.2.14                 # Real-time mic capture + speaker playback (16kHz/24kHz)
 
 # ── Web Automation ────────────────────────────────────────────────────────────
-selenium>=4.18.0              # Chrome automation
-beautifulsoup4>=4.12.0        # HTML parsing
-webdriver-manager>=4.0.0      # Auto-download ChromeDriver
+selenium>=4.20.0                # Chrome automation for web browsing capability
+beautifulsoup4>=4.12.3          # HTML parsing — extracts readable text from pages
+webdriver-manager>=4.0.1        # Auto-downloads matching ChromeDriver
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
-python-dotenv>=1.0.0          # Load .env file
-requests>=2.31.0
+python-dotenv>=1.0.1            # Load .env configuration file
+requests>=2.32.0
 chardet>=5.2.0
