@@ -1,136 +1,236 @@
 """
-ScreenVisionCapability — Screenshot analysis using gemini-2.5-flash.
+LiveSession — Gemini Multimodal Live session for a single AF agent.
 
-Upgraded from gemini-2.0-flash:
-- Better spatial understanding and UI element recognition
-- Improved OCR of on-screen text
-- More reliable bounding box coordinates for element location
+Backend: Vertex AI  (not AI Studio)
+Model:   gemini-2.0-flash-live-preview-04-09
+API:     v1beta1  (Live API is in beta on Vertex AI)
+
+Authentication: Application Default Credentials (ADC)
+  - No api_key needed
+  - Run `gcloud auth application-default login` once, OR
+  - Set GOOGLE_APPLICATION_CREDENTIALS to a service account JSON path
+
+Audio:
+  Input:  16kHz PCM mono  (from mic)
+  Output: 24kHz PCM mono  (to speakers)
 """
 
-import base64
-import io
+import asyncio
 import logging
-from typing import Optional
+from typing import Callable, Awaitable
 
-logger = logging.getLogger("arc.capabilities.screen")
+from google.genai.types import HttpOptions
 
-try:
-    import pygetwindow as gw
-    from PIL import ImageGrab
-    _SCREEN_AVAILABLE = True
-except ImportError:
-    _SCREEN_AVAILABLE = False
-    logger.warning("PIL/pygetwindow not available — screen vision disabled")
+from arc.core.models import LIVE_MODEL
+from arc.core.vertex_config import get_project, get_location
 
-from arc.core.models import VISION_MODEL
+logger = logging.getLogger("arc.live_session")
 
 
-def _capture_jpeg(quality: int = 82) -> Optional[tuple[bytes, int, int]]:
-    if not _SCREEN_AVAILABLE:
-        return None
-    try:
-        win = gw.getActiveWindow()
-        bbox = (win.left, win.top, win.left + win.width, win.top + win.height) if win else None
-        img = ImageGrab.grab(bbox=bbox)
-        w, h = img.size
-        buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="JPEG", quality=quality)
-        return buf.getvalue(), w, h
-    except Exception as e:
-        logger.error(f"Capture failed: {e}")
-        return None
-
-
-class ScreenVisionCapability:
+class LiveSession:
     """
-    Analyses screenshots with gemini-2.5-flash.
-    For interactive screen control (clicking, typing) use ComputerUseCapability.
-    This capability is for read-only understanding of screen content.
+    Wraps a single Gemini Multimodal Live session via Vertex AI.
+
+    Differences from AI Studio version:
+      • Client is created with vertexai=True + project/location (ADC auth)
+      • HttpOptions(api_version="v1beta1") required for Live API on Vertex
+      • No api_key parameter
     """
 
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self._client = None
-        if api_key:
-            try:
-                from google import genai
-                self._client = genai.Client(api_key=api_key)
-            except Exception as e:
-                logger.error(f"Vision client init failed: {e}")
+    def __init__(
+        self,
+        system_prompt: str,
+        voice_name: str,
+        tools: list,
+        on_audio:          Callable[[bytes], None],
+        on_text:           Callable[[str], None],
+        on_tool_call:      Callable[[str, dict], Awaitable[None]],
+        on_speaking_start: Callable[[], None],
+        on_speaking_end:   Callable[[], None],
+    ):
+        self.system_prompt     = system_prompt
+        self.voice_name        = voice_name
+        self.tools             = tools
+        self.on_audio          = on_audio
+        self.on_text           = on_text
+        self.on_tool_call      = on_tool_call
+        self.on_speaking_start = on_speaking_start
+        self.on_speaking_end   = on_speaking_end
 
-    def look_at_screen(self, question: str = "What do you see?") -> str:
-        """
-        Capture the active window and analyse it with gemini-2.5-flash.
+        # Vertex AI client — ADC authentication, Live API endpoint
+        from google import genai
+        self._client = genai.Client(
+            vertexai=True,
+            project=get_project(),
+            location=get_location(),
+            http_options=HttpOptions(api_version="v1beta1"),
+        )
 
-        Args:
-            question: What to look for or describe on screen.
-        Returns:
-            Detailed description relevant to the question.
-        """
-        if not _SCREEN_AVAILABLE:
-            return "Screen capture not available."
-        capture = _capture_jpeg()
-        if not capture:
-            return "Could not capture screen."
-        jpeg_bytes, w, h = capture
+        self._session    = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._running    = False
+        self._send_queue: asyncio.Queue | None = None
 
-        if not self._client:
-            return "Vision model not available."
+    # ── Session lifecycle ──────────────────────────────────────────────────────
 
-        try:
-            from google.genai import types as gt
-            img_b64 = base64.b64encode(jpeg_bytes).decode()
-            win_title = gw.getActiveWindowTitle() or "unknown"
-            response = self._client.models.generate_content(
-                model=VISION_MODEL,
-                contents=[
-                    gt.Part(inline_data=gt.Blob(data=img_b64, mime_type="image/jpeg")),
-                    gt.Part(text=(
-                        f"Active window: {win_title}\n"
-                        f"Question: {question}\n\n"
-                        "Describe what you see in detail, focusing on answering the question. "
-                        "Include: application name, key UI elements, visible text content, "
-                        "and any relevant details. Be thorough but concise."
-                    )),
-                ],
-                config={"temperature": 0.2, "max_output_tokens": 1024}
-            )
-            return response.text or "No description available."
-        except Exception as e:
-            logger.error(f"Vision failed: {e}")
-            return f"Vision error: {e}"
-
-    def get_active_window_title(self) -> str:
-        if not _SCREEN_AVAILABLE:
-            return "unknown"
-        try:
-            return gw.getActiveWindowTitle() or "unknown"
-        except Exception:
-            return "unknown"
-
-    def get_adk_tools(self) -> list:
+    async def _run(self):
         from google.genai import types as gt
-        return [
-            gt.FunctionDeclaration(
-                name="look_at_screen",
-                description=(
-                    "Take a screenshot of the active window and analyse what's on screen "
-                    "using Gemini 2.5 Flash vision. Use this to understand the current "
-                    "state of the user's computer before deciding what to do."
-                ),
-                parameters=gt.Schema(
-                    type=gt.Type.OBJECT,
-                    properties={
-                        "question": gt.Schema(
-                            type=gt.Type.STRING,
-                            description="What to look for or analyse on the screen"
-                        )
-                    }
+
+        self._send_queue = asyncio.Queue()
+
+        config = gt.LiveConnectConfig(
+            response_modalities=["AUDIO"],
+            speech_config=gt.SpeechConfig(
+                voice_config=gt.VoiceConfig(
+                    prebuilt_voice_config=gt.PrebuiltVoiceConfig(
+                        voice_name=self.voice_name
+                    )
                 )
             ),
-        ]
+            system_instruction=gt.Content(
+                parts=[gt.Part(text=self.system_prompt)],
+                role="user",
+            ),
+            tools=self.tools if self.tools else None,
+        )
 
-    def handle_tool_call(self, name: str, args: dict) -> str:
-        if name == "look_at_screen":
-            return self.look_at_screen(args.get("question", "What do you see?"))
-        return f"Unknown screen tool: {name}"
+        try:
+            async with self._client.aio.live.connect(
+                model=LIVE_MODEL,
+                config=config,
+            ) as session:
+                self._session = session
+                logger.info(
+                    f"Vertex AI Live session connected "
+                    f"[model={LIVE_MODEL}, voice={self.voice_name}]"
+                )
+                await asyncio.gather(
+                    self._send_loop(),
+                    self._recv_loop(),
+                )
+        except Exception as e:
+            logger.error(f"Live session error: {e}")
+        finally:
+            self._session = None
+            self._running = False
+
+    # ── Send loop ─────────────────────────────────────────────────────────────
+
+    async def _send_loop(self):
+        from google.genai import types as gt
+
+        while self._running:
+            try:
+                item = await asyncio.wait_for(self._send_queue.get(), timeout=0.1)
+                if item is None:
+                    break
+                kind, data = item
+
+                if kind == "audio":
+                    await self._session.send(
+                        input=gt.LiveClientRealtimeInput(
+                            media_chunks=[
+                                gt.Blob(data=data, mime_type="audio/pcm;rate=16000")
+                            ]
+                        )
+                    )
+                elif kind == "text":
+                    await self._session.send(
+                        input=gt.LiveClientContent(
+                            turns=[gt.Content(
+                                parts=[gt.Part(text=data)],
+                                role="user",
+                            )],
+                            turn_complete=True,
+                        )
+                    )
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                logger.warning(f"Send loop error: {e}")
+                break
+
+    # ── Receive loop ──────────────────────────────────────────────────────────
+
+    async def _recv_loop(self):
+        is_speaking = False
+        try:
+            async for response in self._session.receive():
+                if not self._running:
+                    break
+
+                if response.server_content:
+                    sc = response.server_content
+                    if sc.turn_complete:
+                        if is_speaking:
+                            is_speaking = False
+                            self.on_speaking_end()
+                        continue
+                    if sc.model_turn:
+                        for part in (sc.model_turn.parts or []):
+                            if part.inline_data:
+                                if not is_speaking:
+                                    is_speaking = True
+                                    self.on_speaking_start()
+                                self.on_audio(part.inline_data.data)
+                            elif part.text:
+                                self.on_text(part.text)
+
+                if response.tool_call:
+                    for fc in response.tool_call.function_calls:
+                        asyncio.ensure_future(
+                            self.on_tool_call(fc.name, dict(fc.args))
+                        )
+        except Exception as e:
+            logger.error(f"Recv loop error: {e}")
+
+    # ── Public API ─────────────────────────────────────────────────────────────
+
+    def start(self):
+        """Return the coroutine that runs the session (run via event loop)."""
+        self._running = True
+        return self._run()
+
+    def send_audio(self, pcm_bytes: bytes):
+        """Non-blocking: enqueue mic audio for sending."""
+        if self._send_queue and self._running:
+            try:
+                self._send_queue.put_nowait(("audio", pcm_bytes))
+            except asyncio.QueueFull:
+                pass
+
+    def send_text(self, text: str):
+        """Thread-safe text send from outside the asyncio loop."""
+        if self._send_queue and self._running and self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self._send_queue.put(("text", text)),
+                self._loop,
+            )
+
+    async def send_tool_result(self, tool_name: str, result: str):
+        """Return a tool result to Gemini so the AF can continue speaking."""
+        if not self._session:
+            return
+        from google.genai import types as gt
+        try:
+            await self._session.send(
+                input=gt.LiveClientToolResponse(
+                    function_responses=[
+                        gt.FunctionResponse(
+                            name=tool_name,
+                            response={"result": result},
+                        )
+                    ]
+                )
+            )
+        except Exception as e:
+            logger.warning(f"Tool response send failed: {e}")
+
+    def stop(self):
+        """Signal the send loop to exit cleanly."""
+        self._running = False
+        if self._send_queue and self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._send_queue.put(None),
+                self._loop,
+            )
