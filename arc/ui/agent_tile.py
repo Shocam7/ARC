@@ -1,241 +1,169 @@
 """
-AgentTile — Video-call style tile for an Artificial Friend (AF).
-Shows a procedurally-generated avatar, name, status, and a speaking animation.
+AgentTile — Google Meet–style tile for an Artificial Friend (AF).
+
+Visual hierarchy:
+  • Dark tile (#3c4043) fills its grid cell
+  • Animated Gemini 4-star in the center — illuminates when active
+  • Name badge bottom-left (Meet-style)
+  • Status chip bottom-right
+  • Blue glow border when speaking (like Meet's active-speaker ring)
 """
 
-import hashlib
 import math
+from PyQt6.QtWidgets import QWidget, QLabel, QHBoxLayout, QVBoxLayout
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRect
+from PyQt6.QtGui import (
+    QPainter, QColor, QPen, QBrush, QConicalGradient,
+    QPainterPath, QFont, QLinearGradient, QRadialGradient
+)
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
-from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QRect, pyqtProperty, pyqtSignal
-from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QRadialGradient, QLinearGradient, QFont, QPixmap
-
-
-def _name_to_hue(name: str) -> float:
-    """Deterministically map an agent name to a hue (0–360)."""
-    digest = int(hashlib.sha256(name.encode()).hexdigest()[:8], 16)
-    return (digest % 360)
-
-
-class AvatarWidget(QWidget):
-    """Procedurally generated geometric avatar based on the agent's name."""
-
-    def __init__(self, name: str, parent=None):
-        super().__init__(parent)
-        self.name = name
-        self.hue = _name_to_hue(name)
-        self.initials = "".join(w[0].upper() for w in name.split()[:2]) or name[:2].upper()
-        self.setFixedSize(80, 80)
-
-        # Pulse animation state
-        self._pulse = 0.0
-        self._speaking = False
-        self._pulse_timer = QTimer(self)
-        self._pulse_timer.timeout.connect(self._tick_pulse)
-        self._pulse_timer.start(30)
-        self._pulse_phase = 0.0
-
-    def set_speaking(self, speaking: bool):
-        self._speaking = speaking
-        self.update()
-
-    def _tick_pulse(self):
-        if self._speaking:
-            self._pulse_phase += 0.12
-            self._pulse = 0.5 + 0.5 * math.sin(self._pulse_phase)
-        else:
-            self._pulse_phase = 0.0
-            self._pulse = 0.0
-        self.update()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        cx, cy = w / 2, h / 2
-
-        # ── Background circle ──────────────────────────────
-        bg_color = QColor.fromHsvF(self.hue / 360.0, 0.6, 0.15)
-        p.setBrush(QBrush(bg_color))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(4, 4, w - 8, h - 8)
-
-        # ── Geometric rings (background decoration) ────────
-        ring_color = QColor.fromHsvF(self.hue / 360.0, 0.7, 0.4, 0.3)
-        pen = QPen(ring_color, 1)
-        p.setPen(pen)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        for i, r in enumerate([22, 30, 38]):
-            alpha = int(120 - i * 30)
-            ring_color.setAlpha(alpha)
-            p.setPen(QPen(ring_color, 0.8))
-            p.drawEllipse(int(cx - r), int(cy - r), r * 2, r * 2)
-
-        # ── Speaking pulse ring ────────────────────────────
-        if self._speaking and self._pulse > 0:
-            pulse_color = QColor(0, 200, 255, int(180 * self._pulse))
-            p.setPen(QPen(pulse_color, 2.0))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            r = int(38 + 4 * self._pulse)
-            p.drawEllipse(int(cx - r), int(cy - r), r * 2, r * 2)
-
-        # ── Initials ───────────────────────────────────────
-        text_color = QColor.fromHsvF(self.hue / 360.0, 0.2, 0.95)
-        p.setPen(text_color)
-        font = QFont("Consolas", 18, QFont.Weight.Bold)
-        p.setFont(font)
-        p.drawText(QRect(0, 0, w, h), Qt.AlignmentFlag.AlignCenter, self.initials)
-
-        p.end()
-
-
-class SpeakingBar(QWidget):
-    """Animated equalizer bars shown when agent is speaking."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(30, 14)
-        self._bars = [0.3, 0.6, 1.0, 0.7, 0.4]
-        self._phases = [i * 0.8 for i in range(5)]
-        self._active = False
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
-        self._timer.start(60)
-
-    def set_active(self, active: bool):
-        self._active = active
-        self.update()
-
-    def _tick(self):
-        if self._active:
-            for i in range(5):
-                self._phases[i] += 0.25 + i * 0.07
-                self._bars[i] = 0.35 + 0.65 * abs(math.sin(self._phases[i]))
-            self.update()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        bar_w = 3
-        gap = 2
-        total = len(self._bars) * (bar_w + gap) - gap
-        x0 = (w - total) // 2
-        for i, v in enumerate(self._bars):
-            bh = int(v * h) if self._active else 3
-            x = x0 + i * (bar_w + gap)
-            y = h - bh
-            color = QColor(0, 200, 255, 200) if self._active else QColor(74, 90, 110, 120)
-            p.fillRect(x, y, bar_w, bh, color)
-        p.end()
+from arc.ui.landing_page import GeminiStarWidget   # reuse the shared star drawer
 
 
 class AgentTile(QWidget):
-    """A single AF tile displayed in the ARC meeting grid."""
+    """A single AF video-call tile."""
 
-    clicked = pyqtSignal(str)  # emits agent name
+    clicked = pyqtSignal(str)   # agent name
 
     def __init__(self, agent_name: str, persona: str = "", parent=None):
         super().__init__(parent)
         self.agent_name = agent_name
-        self.persona = persona
-        self.setObjectName("agent_tile")
-        self.setMinimumSize(220, 190)
-        self._speaking = False
-        self._glow_alpha = 0
+        self.persona    = persona
+        self.setObjectName("meet_tile")
+        self.setProperty("speaking", "false")
+        self.setMinimumSize(160, 120)
+
+        self._speaking  = False
+        self._glow      = 0.0
+        self._glow_dir  = 1
+
+        # Glow border animation
         self._glow_timer = QTimer(self)
         self._glow_timer.timeout.connect(self._tick_glow)
         self._glow_timer.start(30)
-        self._glow_phase = 0.0
-        self._init_ui()
 
-    def _init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        self._build_ui()
 
-        # ── Avatar area ────────────────────────────────────
-        avatar_container = QWidget()
-        avatar_container.setObjectName("agent_tile")
-        avatar_layout = QVBoxLayout(avatar_container)
-        avatar_layout.setContentsMargins(0, 24, 0, 12)
-        avatar_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    # ── UI ─────────────────────────────────────────────────────────────────────
 
-        self.avatar = AvatarWidget(self.agent_name)
-        avatar_layout.addWidget(self.avatar, alignment=Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(avatar_container, 1)
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # ── Bottom bar ─────────────────────────────────────
+        # ── Star area (fills tile) ──────────────────────────────────────────
+        self._star_area = QWidget()
+        self._star_area.setStyleSheet("background-color: transparent;")
+        root.addWidget(self._star_area, 1)
+
+        # ── Bottom badge bar ────────────────────────────────────────────────
         bar = QWidget()
-        bar.setStyleSheet("background-color: rgba(7, 9, 15, 0.8); border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;")
-        bar_layout = QHBoxLayout(bar)
-        bar_layout.setContentsMargins(12, 8, 12, 8)
-        bar_layout.setSpacing(6)
+        bar.setFixedHeight(36)
+        bar.setStyleSheet("background-color: transparent;")
+        bar_l = QHBoxLayout(bar)
+        bar_l.setContentsMargins(10, 0, 10, 6)
+        bar_l.setSpacing(4)
 
-        # Name
-        self.name_label = QLabel(self.agent_name.upper())
-        self.name_label.setObjectName("tile_name")
+        self._name_badge = QLabel(self.agent_name)
+        self._name_badge.setObjectName("tile_name_badge")
 
-        # Speaking bars
-        self.speaking_bar = SpeakingBar()
+        self._status_lbl = QLabel("IDLE")
+        self._status_lbl.setStyleSheet(
+            "color:#9aa0a6;font-size:10px;font-weight:600;"
+            "background:rgba(0,0,0,0.55);border-radius:3px;padding:2px 6px;"
+        )
 
-        # Status
-        self.status_label = QLabel("IDLE")
-        self.status_label.setObjectName("tile_status")
-        self.status_label.setProperty("state", "idle")
+        bar_l.addWidget(self._name_badge)
+        bar_l.addStretch()
+        bar_l.addWidget(self._status_lbl)
+        root.addWidget(bar)
 
-        bar_layout.addWidget(self.name_label)
-        bar_layout.addWidget(self.speaking_bar)
-        bar_layout.addStretch()
-        bar_layout.addWidget(self.status_label)
+        # ── Gemini star widget ──────────────────────────────────────────────
+        self._star = GeminiStarWidget(size=80, parent=self._star_area)
+        self._star.set_state("idle")
+        self._star_area.resizeEvent = self._reposition_star   # hook
 
-        layout.addWidget(bar)
+    def _reposition_star(self, event=None):
+        """Keep the star centered in star_area as tile resizes."""
+        sw, sh = self._star_area.width(), self._star_area.height()
+        # Scale star proportionally to tile, clamped 60–120px
+        target = max(60, min(120, int(min(sw, sh) * 0.45)))
+        if self._star.width() != target:
+            self._star.setFixedSize(target, target)
+        x = (sw - self._star.width()) // 2
+        y = (sh - self._star.height()) // 2
+        self._star.move(x, y)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reposition_star()
+
+    # ── State setters ──────────────────────────────────────────────────────────
 
     def set_speaking(self, speaking: bool):
         self._speaking = speaking
-        self.avatar.set_speaking(speaking)
-        self.speaking_bar.set_active(speaking)
+        self._star.set_state("speaking" if speaking else "idle")
+        self.setProperty("speaking", "true" if speaking else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
         if speaking:
-            self.set_status("SPEAKING", "speaking")
+            self._set_status("SPEAKING", "#8ab4f8")
         else:
-            self.set_status("IDLE", "idle")
-        self.update()
+            self._set_status("IDLE", "#9aa0a6")
 
     def set_status(self, text: str, state: str = "idle"):
-        self.status_label.setText(text)
-        self.status_label.setProperty("state", state)
-        self.status_label.style().unpolish(self.status_label)
-        self.status_label.style().polish(self.status_label)
+        """Called by signal: (label_text, state_key)"""
+        colour_map = {
+            "speaking": "#8ab4f8",
+            "thinking": "#fbbc04",
+            "acting":   "#34a853",
+            "idle":     "#9aa0a6",
+        }
+        colour = colour_map.get(state, "#9aa0a6")
+        self._star.set_state(state)
+        self._set_status(text, colour)
 
     def set_thinking(self):
         self.set_status("THINKING", "thinking")
-        self.avatar.set_speaking(False)
-        self.speaking_bar.set_active(False)
 
-    def set_acting(self):
-        self.set_status("ACTING", "acting")
+    def _set_status(self, text: str, colour: str):
+        self._status_lbl.setText(text)
+        self._status_lbl.setStyleSheet(
+            f"color:{colour};font-size:10px;font-weight:600;"
+            "background:rgba(0,0,0,0.55);border-radius:3px;padding:2px 6px;"
+        )
+
+    # ── Glow border ────────────────────────────────────────────────────────────
 
     def _tick_glow(self):
         if self._speaking:
-            self._glow_phase += 0.1
-            self._glow_alpha = int(80 + 60 * math.sin(self._glow_phase))
+            self._glow += 0.08 * self._glow_dir
+            if self._glow >= 1.0:
+                self._glow = 1.0; self._glow_dir = -1
+            elif self._glow <= 0.4:
+                self._glow = 0.4; self._glow_dir = 1
         else:
-            self._glow_alpha = 0
-            self._glow_phase = 0.0
+            self._glow = max(0.0, self._glow - 0.05)
         self.update()
 
     def paintEvent(self, event):
-        super().paintEvent(event)
-        if self._glow_alpha > 0:
-            p = QPainter(self)
-            p.setRenderHint(QPainter.RenderHint.Antialiasing)
-            # Outer glow border
-            glow_color = QColor(0, 200, 255, self._glow_alpha)
-            pen = QPen(glow_color, 2)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Tile background
+        p.setBrush(QBrush(QColor(0x3c, 0x40, 0x43)))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(self.rect(), 8, 8)
+
+        # Speaking glow border
+        if self._glow > 0:
+            alpha = int(255 * self._glow)
+            pen = QPen(QColor(138, 180, 248, alpha), 2.5)
             p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(1, 1, self.width() - 2, self.height() - 2, 12, 12)
-            p.end()
+            p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 8, 8)
+
+        p.end()
 
     def mousePressEvent(self, event):
         self.clicked.emit(self.agent_name)
