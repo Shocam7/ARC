@@ -1,13 +1,20 @@
 """
 ArtificialFriend (AF) — A fully capable AI agent.
 
-Model stack:
-  Real-time voice:    gemini-2.5-flash  (Live API)
-  Screen analysis:    gemini-2.5-flash  (vision)
-  Computer control:   gemini-2.5-computer-use-preview-10-2025
-  Deep research:      deep-research-pro-preview-12-2025
-  Web browse:         Selenium + BeautifulSoup (open source)
-  Keyboard/mouse:     pyautogui (open source)
+Model stack (all served through Vertex AI):
+  Real-time voice:    gemini-2.0-flash-live-preview-04-09  (Live API, v1beta1)
+  Orchestrator:       gemini-2.5-flash                     (generate_content, v1)
+  Screen analysis:    gemini-2.5-flash                     (vision, v1)
+  Computer control:   gemini-2.5-computer-use-preview-...  (v1)
+  Deep research:      gemini-2.5-flash + grounding         (v1)
+  Web browse:         Selenium + BeautifulSoup              (open source)
+  Keyboard/mouse:     pyautogui                             (open source)
+
+Authentication: Application Default Credentials (ADC)
+  No api_key is passed anywhere. The google-genai SDK picks up
+  credentials from the environment automatically:
+    • gcloud auth application-default login  (for local dev)
+    • GOOGLE_APPLICATION_CREDENTIALS env var (for service accounts)
 """
 
 import asyncio
@@ -46,7 +53,7 @@ COMPUTER CONTROL ({COMPUTER_USE_MODEL}):
   computer_use(task, max_steps)  — Execute complex multi-step UI tasks
   click_element(description)     — Click a single UI element by description
 
-RESEARCH ({DEEP_RESEARCH_MODEL}):
+RESEARCH ({DEEP_RESEARCH_MODEL} + grounding):
   deep_research(query, depth)    — Multi-step comprehensive web research
                                    depth: 'quick'|'standard'|'thorough'
   fact_check(claim)              — Verify a specific claim with live web sources
@@ -70,7 +77,10 @@ DECISION GUIDE:
 
 
 class ArtificialFriend(QObject):
-    """Single AF agent — owns a Gemini Live session + all tool capabilities."""
+    """
+    Single AF agent — owns a Gemini Live session + all tool capabilities.
+    All model calls go through Vertex AI via ADC — no api_key stored anywhere.
+    """
 
     # ── Qt Signals ─────────────────────────────────────────────────────────────
     speaking_started     = pyqtSignal()
@@ -86,23 +96,24 @@ class ArtificialFriend(QObject):
         name: str,
         persona: str,
         voice: str,
-        api_key: str,
         audio_manager: AudioManager,
         parent=None,
     ):
+        """
+        Note: No api_key parameter. Vertex AI ADC handles authentication.
+        """
         super().__init__(parent)
         self.name          = name
         self.persona       = persona
         self.voice         = voice
-        self.api_key       = api_key
         self.audio_manager = audio_manager
 
-        # ── Capabilities ────────────────────────────────────────────────────
+        # ── Capabilities (no api_key — use Vertex AI ADC internally) ─────────
         self.web           = WebBrowseCapability()
-        self.screen        = ScreenVisionCapability(api_key=api_key)
+        self.screen        = ScreenVisionCapability()
         self.keyboard      = KeyboardControlCapability()
-        self.computer_use  = ComputerUseCapability(api_key=api_key)
-        self.deep_research = DeepResearchCapability(api_key=api_key)
+        self.computer_use  = ComputerUseCapability()
+        self.deep_research = DeepResearchCapability()
 
         # ── Runtime ─────────────────────────────────────────────────────────
         self._active  = False
@@ -113,7 +124,7 @@ class ArtificialFriend(QObject):
 
         self._system_prompt = self._build_system_prompt()
 
-    # ── System prompt ─────────────────────────────────────────────────────────
+    # ── System prompt ──────────────────────────────────────────────────────────
 
     def _build_system_prompt(self) -> str:
         mem = ("\n".join(f"- {m}" for m in self._memory)
@@ -129,10 +140,10 @@ class ArtificialFriend(QObject):
             "Always confirm task completion verbally.\n\n"
             f"{TOOL_REFERENCE}\n\n"
             f"MEMORY:\n{mem}\n\n"
-            f"LIVE MODEL: {LIVE_MODEL}"
+            f"LIVE MODEL: {LIVE_MODEL} (Vertex AI)"
         )
 
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
+    # ── Lifecycle ──────────────────────────────────────────────────────────────
 
     def start(self):
         if self._active:
@@ -140,7 +151,7 @@ class ArtificialFriend(QObject):
         self._active = True
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
-        logger.info(f"AF [{self.name}] started (voice={self.voice})")
+        logger.info(f"AF [{self.name}] started (voice={self.voice}, backend=VertexAI)")
 
     def stop(self):
         self._active = False
@@ -152,6 +163,7 @@ class ArtificialFriend(QObject):
         logger.info(f"AF [{self.name}] stopped")
 
     def _run_loop(self):
+        """Asyncio event loop — runs in its own daemon thread."""
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
 
@@ -166,7 +178,6 @@ class ArtificialFriend(QObject):
         tool_config = gt.Tool(function_declarations=all_decls)
 
         self._live = LiveSession(
-            api_key           = self.api_key,
             system_prompt     = self._system_prompt,
             voice_name        = self.voice,
             tools             = [tool_config],
@@ -185,7 +196,7 @@ class ArtificialFriend(QObject):
         finally:
             self._loop.close()
 
-    # ── Callbacks ────────────────────────────────────────────────────────────
+    # ── LiveSession callbacks ─────────────────────────────────────────────────
 
     def _on_audio(self, pcm_bytes: bytes):
         self.audio_manager.enqueue_audio(pcm_bytes)
@@ -203,10 +214,9 @@ class ArtificialFriend(QObject):
         self.status_changed.emit("IDLE", "idle")
 
     async def _on_tool_call(self, tool_name: str, args: dict):
-        """Route tool call, emit overlay signals for computer-use tools."""
+        """Route tool call to correct capability, emit overlay signals."""
         is_cu = tool_name in _COMPUTER_USE_TOOLS
 
-        # Emit ACTING status + overlay trigger
         self.status_changed.emit("ACTING", "acting")
         self.text_received.emit(f"[{self.name}] ⚙ {tool_name}({_fmt(args)})")
         if is_cu:
@@ -228,7 +238,7 @@ class ArtificialFriend(QObject):
 
             elif tool_name in (
                 "type_text", "press_hotkey", "press_key",
-                "mouse_click", "scroll", "take_screenshot"
+                "mouse_click", "scroll", "take_screenshot",
             ):
                 result = self.keyboard.handle_tool_call(tool_name, args)
 
@@ -237,21 +247,19 @@ class ArtificialFriend(QObject):
 
         except Exception as e:
             result = f"Tool error ({tool_name}): {e}"
-            logger.error(f"Tool {tool_name} failed: {e}")
+            logger.error(f"Tool {tool_name} failed: {e}", exc_info=True)
         finally:
             if is_cu:
                 self.computer_use_ended.emit()
 
-        # Show result in chat
         preview = result[:300] + ("…" if len(result) > 300 else "")
         self.text_received.emit(f"[{self.name}↩] {preview}")
         self.status_changed.emit("THINKING", "thinking")
 
-        # Return result to Gemini Live so the AF can continue speaking
         if self._live and self._live._session:
             await self._live.send_tool_result(tool_name, result)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # ── Public API ─────────────────────────────────────────────────────────────
 
     def send_audio(self, pcm_bytes: bytes):
         if self._live and self._active:
@@ -261,11 +269,12 @@ class ArtificialFriend(QObject):
         if self._live and self._active and self._loop:
             asyncio.run_coroutine_threadsafe(
                 self._live._send_queue.put(("text", text)),
-                self._loop
+                self._loop,
             )
             self.status_changed.emit("THINKING", "thinking")
 
     def remember(self, info: str):
+        """Persist a piece of information in this AF's memory."""
         self._memory.append(info)
         self._system_prompt = self._build_system_prompt()
 
