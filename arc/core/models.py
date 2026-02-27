@@ -1,60 +1,51 @@
 """
-ARC Model Registry
-──────────────────
+ARC Model Registry — Vertex AI Edition
+───────────────────────────────────────
 Single source of truth for every Gemini model string used across ARC.
-Update here to switch models globally.
+All models are accessed through Vertex AI (Google Cloud), not AI Studio.
 
-All models confirmed available on Google AI Studio free tier (Feb 2026).
+Reference: https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/multimodal-live
 """
 
 # ── Real-time voice / Live API ────────────────────────────────────────────────
-# Powers the live bidirectional audio session for every AF.
-# 2.5 Flash supports the Live API and is significantly smarter than 2.0 Flash Live.
-LIVE_MODEL = "gemini-2.5-flash"
+# The Live API on Vertex AI (v1beta1 endpoint).
+# This is the Vertex AI-specific Live model ID from official docs.
+LIVE_MODEL = "gemini-2.0-flash-live-preview-04-09"
 
 # ── Orchestrator routing ──────────────────────────────────────────────────────
-# Routes user messages to the correct AF (multi-agent mode).
-# Needs to be fast (~200ms) — Flash is ideal.
+# Fast routing between agents (~150-250ms). Flash is ideal.
 ORCHESTRATOR_MODEL = "gemini-2.5-flash"
 
 # ── Screen vision / analysis ──────────────────────────────────────────────────
-# Analyses screenshots, locates UI elements, understands app context.
-# 2.5 Flash has substantially better spatial understanding than 2.0 Flash.
+# Analyses screenshots, locates UI elements, understands application context.
 VISION_MODEL = "gemini-2.5-flash"
 
 # ── Computer Use ──────────────────────────────────────────────────────────────
-# Dedicated model trained specifically for screen control tasks.
-# Receives a screenshot and returns structured actions (click, type, scroll…).
-# This is the right tool for: clicking buttons, form-filling, UI navigation.
-COMPUTER_USE_MODEL = "gemini-2.5-computer-use-preview-10-2025"
+# Dedicated screen-control model. Check Vertex AI Model Garden for availability.
+# Falls back to VISION_MODEL if unavailable in your region.
+COMPUTER_USE_MODEL = "gemini-2.5-computer-use-preview-04-2025"
 
 # ── Deep Research ─────────────────────────────────────────────────────────────
-# Multi-step research model — performs thorough web research autonomously.
-# Use when an AF needs comprehensive, cited research (not quick lookups).
-DEEP_RESEARCH_MODEL = "deep-research-pro-preview-12-2025"
+# Multi-step autonomous web research. Uses Flash + grounding until GA on Vertex.
+DEEP_RESEARCH_MODEL = "gemini-2.5-flash"
 
-# ── Text-to-Speech (supplementary) ───────────────────────────────────────────
-# High-quality TTS for responses outside the Live session
-# (e.g. tool completion confirmations, long narrations).
-TTS_MODEL   = "gemini-2.5-flash-preview-tts"
-TTS_PRO_MODEL = "gemini-2.5-pro-preview-tts"
-
-# ── General reasoning / complex tasks ────────────────────────────────────────
-# Used for tasks that need deeper reasoning: code generation, analysis, planning.
-# Falls back to FLASH_MODEL for simpler tasks to stay within rate limits.
+# ── General purpose ───────────────────────────────────────────────────────────
 PRO_MODEL   = "gemini-2.5-pro"
 FLASH_MODEL = "gemini-2.5-flash"
 FLASH_LITE  = "gemini-2.5-flash-lite"
 
-# ── Model capability matrix (for reference) ──────────────────────────────────
+# ── Text-to-Speech ───────────────────────────────────────────────────────────
+TTS_MODEL     = "gemini-2.5-flash-preview-tts"
+TTS_PRO_MODEL = "gemini-2.5-pro-preview-tts"
+
+# ── Capability reference ──────────────────────────────────────────────────────
 MODEL_INFO = {
-    LIVE_MODEL:          "Real-time voice, multimodal Live API",
-    ORCHESTRATOR_MODEL:  "Fast routing, low latency",
-    COMPUTER_USE_MODEL:  "Screen control, UI interaction, action planning",
+    LIVE_MODEL:          "Real-time voice, Vertex AI Live API (v1beta1)",
+    ORCHESTRATOR_MODEL:  "Fast routing, generate_content (v1)",
+    COMPUTER_USE_MODEL:  "Screen control, structured action output",
     DEEP_RESEARCH_MODEL: "Multi-step web research with citations",
     VISION_MODEL:        "Screenshot understanding, spatial reasoning",
-    TTS_MODEL:           "High-quality speech synthesis (Flash quality)",
-    TTS_PRO_MODEL:       "Studio-quality speech synthesis (Pro quality)",
+    TTS_MODEL:           "High-quality speech synthesis",
     PRO_MODEL:           "Complex reasoning, long context, coding",
-    FLASH_LITE:          "Ultra-fast, low-cost, simple tasks",
+    FLASH_LITE:          "Ultra-fast, low-cost simple tasks",
 }
