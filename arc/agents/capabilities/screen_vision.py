@@ -1,10 +1,14 @@
 """
-ScreenVisionCapability — Screenshot analysis using gemini-2.5-flash.
-Read-only. For screen *control* use ComputerUseCapability.
+ScreenVisionCapability — Screenshot analysis using Vertex AI + gemini-2.5-flash.
+
+Read-only screen understanding.
+For screen *control* (clicking, typing) use ComputerUseCapability.
+
+Authentication: Vertex AI ADC — no api_key needed.
 """
 
 import base64
-import io          # ← was missing, caused NameError in _capture_jpeg
+import io
 import logging
 from typing import Optional
 
@@ -19,6 +23,7 @@ except ImportError:
     logger.warning("PIL/pygetwindow not available — screen vision disabled")
 
 from arc.core.models import VISION_MODEL
+from arc.core.vertex_config import make_standard_client
 
 
 def _capture_jpeg(quality: int = 82) -> Optional[tuple[bytes, int, int]]:
@@ -40,29 +45,18 @@ def _capture_jpeg(quality: int = 82) -> Optional[tuple[bytes, int, int]]:
 
 class ScreenVisionCapability:
     """
-    Analyses screenshots with gemini-2.5-flash (vision).
-    For interactive screen control use ComputerUseCapability instead.
+    Analyses screenshots with gemini-2.5-flash via Vertex AI.
+    No api_key — uses Application Default Credentials.
     """
 
-    def __init__(self, api_key: str):
-        self.api_key = api_key
+    def __init__(self):
         self._client = None
-        if api_key:
-            try:
-                from google import genai
-                self._client = genai.Client(api_key=api_key)
-            except Exception as e:
-                logger.error(f"Vision client init failed: {e}")
+        try:
+            self._client = make_standard_client()
+        except Exception as e:
+            logger.error(f"Vision client init failed: {e}")
 
     def look_at_screen(self, question: str = "What do you see?") -> str:
-        """
-        Capture the active window and analyse it with gemini-2.5-flash.
-
-        Args:
-            question: What to look for or describe on screen.
-        Returns:
-            Detailed natural-language description.
-        """
         if not _SCR_OK:
             return "Screen capture not available."
         capture = _capture_jpeg()
@@ -71,7 +65,7 @@ class ScreenVisionCapability:
         jpeg_bytes, _w, _h = capture
 
         if not self._client:
-            return "Vision model not available (no API key)."
+            return "Vision model not available (Vertex AI client not initialised)."
 
         try:
             from google.genai import types as gt
@@ -84,12 +78,12 @@ class ScreenVisionCapability:
                     gt.Part(text=(
                         f"Active window: {win_title}\n"
                         f"Question: {question}\n\n"
-                        "Describe what you see in detail focusing on the question. "
+                        "Describe what you see in detail, focusing on the question. "
                         "Include: application name, key UI elements, visible text, "
                         "and any relevant details. Be thorough but concise."
                     )),
                 ],
-                config={"temperature": 0.2, "max_output_tokens": 1024}
+                config={"temperature": 0.2, "max_output_tokens": 1024},
             )
             return resp.text or "No description available."
         except Exception as e:
@@ -110,19 +104,19 @@ class ScreenVisionCapability:
             gt.FunctionDeclaration(
                 name="look_at_screen",
                 description=(
-                    "Take a screenshot of the active window and analyse what's on screen "
-                    "using Gemini 2.5 Flash vision. Use this to understand the current "
-                    "state of the user's computer before deciding what to do."
+                    "Take a screenshot and analyse what's on screen using "
+                    "Gemini 2.5 Flash vision (Vertex AI). Use to understand the "
+                    "current state of the user's computer before deciding what to do."
                 ),
                 parameters=gt.Schema(
                     type=gt.Type.OBJECT,
                     properties={
                         "question": gt.Schema(
                             type=gt.Type.STRING,
-                            description="What to look for or analyse on screen"
+                            description="What to look for or analyse on screen",
                         )
-                    }
-                )
+                    },
+                ),
             ),
         ]
 
