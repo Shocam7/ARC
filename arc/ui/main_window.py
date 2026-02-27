@@ -2,14 +2,14 @@
 MainWindow — ARC's top-level application window.
 Manages navigation between landing page and room view.
 Owns the AudioManager, Orchestrator, and all AF agents.
+
+Authentication: Vertex AI ADC — no api_key stored or passed.
 """
 
 import logging
-import os
 
-from PyQt6.QtWidgets import QMainWindow, QStackedWidget, QMessageBox
+from PyQt6.QtWidgets import QMainWindow, QStackedWidget
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QIcon
 
 from arc.ui.styles import LANDING_STYLESHEET, ROOM_STYLESHEET
 from arc.ui.landing_page import LandingPage
@@ -24,20 +24,25 @@ logger = logging.getLogger("arc.main_window")
 class MainWindow(QMainWindow):
     """Top-level ARC window."""
 
-    def __init__(self, api_key: str):
+    def __init__(self):
+        """
+        No api_key parameter — authentication handled by Vertex AI ADC.
+        Credentials come from:
+          • gcloud auth application-default login  (local dev)
+          • GOOGLE_APPLICATION_CREDENTIALS env var  (service account)
+        """
         super().__init__()
-        self.api_key = api_key
         self.setWindowTitle("ARC — Artificial Reality Companion")
         self.setMinimumSize(1100, 720)
         self.resize(1280, 800)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
 
-        # Core services
-        self._audio    = AudioManager()
-        self._orch     = Orchestrator(api_key=api_key)
-        self._agents:  dict[str, ArtificialFriend] = {}
-        self._room:    RoomView | None = None
-        self._mic_on   = True
+        # Core services (all use ADC internally)
+        self._audio  = AudioManager()
+        self._orch   = Orchestrator()
+        self._agents: dict[str, ArtificialFriend] = {}
+        self._room:   RoomView | None = None
+        self._mic_on = True
 
         # Mic → active agent @ 50Hz
         self._mic_timer = QTimer(self)
@@ -53,7 +58,7 @@ class MainWindow(QMainWindow):
         self._landing.launch_room.connect(self._enter_room)
         self._stack.addWidget(self._landing)
 
-        # Apply landing stylesheet
+        # Start with landing stylesheet
         self.setStyleSheet(LANDING_STYLESHEET)
 
     # ── Navigation ─────────────────────────────────────────────────────────────
@@ -62,16 +67,16 @@ class MainWindow(QMainWindow):
         logger.info(f"Entering room: {room_name} as {username}")
 
         self._room = RoomView(
-            room_name=room_name,
-            username=username,
-            orchestrator=self._orch,
+            room_name    = room_name,
+            username     = username,
+            orchestrator = self._orch,
         )
         self._room.leave_room.connect(self._leave_room)
         self._room.agent_spawn_requested.connect(self._spawn_agent)
         self._stack.addWidget(self._room)
         self._stack.setCurrentWidget(self._room)
 
-        # Switch to room stylesheet
+        # Switch to dark room stylesheet
         self.setStyleSheet(ROOM_STYLESHEET)
 
         self._audio.start_mic()
@@ -94,24 +99,21 @@ class MainWindow(QMainWindow):
             self._room.deleteLater()
             self._room = None
 
-        # Back to landing stylesheet
+        # Back to light landing stylesheet
         self.setStyleSheet(LANDING_STYLESHEET)
         self._stack.setCurrentWidget(self._landing)
 
-        # Reset orchestrator
+        # Reset orchestrator state
         for name in list(self._orch._agents.keys()):
             self._orch.unregister_agent(name)
 
     # ── Agent lifecycle ────────────────────────────────────────────────────────
 
     def _spawn_agent(self, config: dict):
+        """Create, register, and start a new AF agent."""
         name = config["name"]
         if name in self._agents:
             logger.warning(f"Agent {name} already exists")
-            return
-        if not self.api_key:
-            if self._room:
-                self._room._log("❌ No GEMINI_API_KEY. Add it to .env and restart.")
             return
 
         logger.info(f"Spawning AF: {name}")
@@ -119,7 +121,6 @@ class MainWindow(QMainWindow):
             name          = name,
             persona       = config.get("persona", ""),
             voice         = config.get("voice", "Aoede"),
-            api_key       = self.api_key,
             audio_manager = self._audio,
             parent        = self,
         )
@@ -132,7 +133,7 @@ class MainWindow(QMainWindow):
         try:
             agent.start()
             if self._room:
-                self._room._log(f"✅ {name} is online")
+                self._room._log(f"✅ {name} is online (Vertex AI)")
         except Exception as e:
             logger.error(f"Failed to start {name}: {e}")
             if self._room:
