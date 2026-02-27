@@ -1,9 +1,10 @@
 """
-Orchestrator — Central routing agent for multi-AF sessions.
+Orchestrator — Routes user messages to the best-fit AF agent.
 
-Single AF:  user input → that AF directly.
-2+ AFs:     Orchestrator (gemini-2.5-flash) decides which AF responds.
-            Only one AF speaks at a time.
+Single AF  → direct dispatch, no routing needed.
+2+ AFs     → calls gemini-2.5-flash to pick the agent most suited to the request.
+
+Backend:   Vertex AI  (ADC authentication, no api_key)
 """
 
 import json
@@ -13,6 +14,7 @@ from typing import Optional
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from arc.core.models import ORCHESTRATOR_MODEL
+from arc.core.vertex_config import make_standard_client
 
 logger = logging.getLogger("arc.orchestrator")
 
@@ -35,7 +37,7 @@ Output ONLY a JSON object:
 }
 
 Rules:
-- Match request to the agent whose persona best fits the task
+- Match the request to the agent whose persona best fits the task
 - The selected_agent value MUST exactly match one of the provided names
 - If the request is general or ambiguous, prefer the last-active agent
 - If only one agent exists, always pick that agent
@@ -43,13 +45,12 @@ Rules:
 
 
 class Orchestrator(QObject):
-    """Routes user messages to the best-fit AF using gemini-2.5-flash."""
+    """Routes user messages to the best-fit AF using gemini-2.5-flash on Vertex AI."""
 
     routing_decision = pyqtSignal(str, str)   # (agent_name, reason)
 
-    def __init__(self, api_key: str, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.api_key      = api_key
         self._agents: dict = {}
         self._last_active: Optional[str] = None
         self._client = None
@@ -57,12 +58,12 @@ class Orchestrator(QObject):
 
     def _init_client(self):
         try:
-            from google import genai
-            self._client = genai.Client(api_key=self.api_key)
+            self._client = make_standard_client()
+            logger.info("Orchestrator: Vertex AI client initialised")
         except Exception as e:
             logger.error(f"Orchestrator client init failed: {e}")
 
-    # ── Agent registry ────────────────────────────────────────────────────────
+    # ── Agent registry ─────────────────────────────────────────────────────────
 
     def register_agent(self, agent):
         self._agents[agent.name] = agent
@@ -79,10 +80,10 @@ class Orchestrator(QObject):
     def agent_count(self) -> int:
         return len(self._agents)
 
-    # ── Routing ───────────────────────────────────────────────────────────────
+    # ── Routing ────────────────────────────────────────────────────────────────
 
     def route(self, user_message: str) -> Optional[str]:
-        """Return the name of the AF that should respond. Blocks briefly."""
+        """Return the name of the AF that should respond."""
         if not self._agents:
             return None
         if len(self._agents) == 1:
@@ -96,7 +97,7 @@ class Orchestrator(QObject):
         return self._last_active
 
     def _route_with_llm(self, user_message: str) -> Optional[str]:
-        """Call gemini-2.5-flash to pick the best agent (~150-250ms)."""
+        """Call gemini-2.5-flash on Vertex AI to pick the best agent (~150-250ms)."""
         if not self._client:
             return self._last_active
 
@@ -120,15 +121,14 @@ class Orchestrator(QObject):
                     system_instruction=ORCHESTRATOR_SYSTEM,
                     temperature=0.1,
                     max_output_tokens=120,
-                )
+                ),
             )
             text = response.text.strip()
-            # Strip markdown fences
             if "```" in text:
                 text = text.split("```")[1]
                 if text.startswith("json"):
                     text = text[4:]
-            data = json.loads(text.strip())
+            data     = json.loads(text.strip())
             selected = data.get("selected_agent", "")
             reason   = data.get("reason", "")
             logger.info(f"Orchestrator → [{selected}]: {reason}")
@@ -141,7 +141,7 @@ class Orchestrator(QObject):
             logger.warning(f"Orchestrator routing error: {e}")
             return self._last_active
 
-    # ── Dispatch ──────────────────────────────────────────────────────────────
+    # ── Dispatch ───────────────────────────────────────────────────────────────
 
     def dispatch_text(self, user_message: str) -> Optional[str]:
         """Route and deliver a text message. Returns receiving agent name."""
