@@ -1,55 +1,67 @@
 """
-ComputerUseCapability — Screen control via Gemini 2.5 Computer Use.
+ComputerUseCapability — Screen control via gemini-2.5-computer-use-preview-10-2025.
 
-Uses `gemini-2.5-computer-use-preview-10-2025`, a model trained specifically
-to receive a screenshot and return structured computer actions (click, type,
-scroll, drag, hotkey…).
-
-This is a significant upgrade over the raw pyautogui approach:
-- The model understands UI context, not just pixel coordinates
-- It can chain multiple actions for complex tasks
-- It handles ambiguous element descriptions gracefully
-- It can be told "fill this form" and figures out each field itself
+Screenshot capture notes
+────────────────────────
+The ScreenOverlayWindow (arc/ui/screen_overlay.py) has WDA_EXCLUDEFROMCAPTURE
+set on it by Windows, so PIL's ImageGrab.grab() automatically omits those pixels.
+No special capture logic is needed here — the OS handles it transparently.
 """
 
 import base64
 import io
+import json
 import logging
 import time
 from typing import Optional
 
 logger = logging.getLogger("arc.capabilities.computer_use")
 
+# ── Optional deps with graceful fallback ──────────────────────────────────────
 try:
     import pyautogui
+    pyautogui.FAILSAFE = True
+    pyautogui.PAUSE    = 0.08
+    _PA_OK = True
+except ImportError:
+    _PA_OK = False
+    logger.warning("pyautogui not available — mouse/click actions disabled")
+
+try:
+    import keyboard as _kb
+    _KB_OK = True
+except ImportError:
+    _KB_OK = False
+    logger.warning("keyboard not available — type actions will fall back to pyautogui")
+
+try:
     import pygetwindow as gw
     from PIL import ImageGrab, Image
-    _SCREEN_AVAILABLE = True
-    pyautogui.FAILSAFE = True
-    pyautogui.PAUSE = 0.08
+    _SCR_OK = True
 except ImportError:
-    _SCREEN_AVAILABLE = False
-    logger.warning("pyautogui/PIL not available — computer use disabled")
+    _SCR_OK = False
+    logger.warning("pygetwindow/PIL not available — screen capture disabled")
 
 from arc.core.models import COMPUTER_USE_MODEL, VISION_MODEL
 
 
-def _capture_window_jpeg(quality: int = 85) -> Optional[tuple[bytes, int, int]]:
+# ── Screen capture ────────────────────────────────────────────────────────────
+
+def _capture_jpeg(quality: int = 85) -> Optional[tuple[bytes, int, int]]:
     """
     Capture the active window as JPEG bytes.
-    Returns (jpeg_bytes, width, height) or None on failure.
+    The ScreenOverlayWindow is invisible here thanks to WDA_EXCLUDEFROMCAPTURE.
+    Returns (jpeg_bytes, px_width, px_height) or None.
     """
-    if not _SCREEN_AVAILABLE:
+    if not _SCR_OK:
         return None
     try:
-        win = gw.getActiveWindow()
-        if win and win.width > 0:
-            bbox = (win.left, win.top, win.left + win.width, win.top + win.height)
-        else:
-            bbox = None
-        img = ImageGrab.grab(bbox=bbox)
+        win  = gw.getActiveWindow()
+        bbox = (win.left, win.top, win.left + win.width, win.top + win.height) \
+               if (win and win.width > 10) else None
+        img  = ImageGrab.grab(bbox=bbox)
         w, h = img.size
-        buf = io.BytesIO()
+        buf  = io.BytesIO()
         img.convert("RGB").save(buf, format="JPEG", quality=quality)
         return buf.getvalue(), w, h
     except Exception as e:
@@ -58,32 +70,39 @@ def _capture_window_jpeg(quality: int = 85) -> Optional[tuple[bytes, int, int]]:
 
 
 def _norm_to_screen(nx: float, ny: float, img_w: int, img_h: int) -> tuple[int, int]:
-    """Convert 0-1000 normalised coordinates to actual screen pixels."""
-    win = gw.getActiveWindow() if _SCREEN_AVAILABLE else None
-    ox = win.left if win else 0
-    oy = win.top  if win else 0
-    px = int(nx / 1000 * img_w) + ox
-    py = int(ny / 1000 * img_h) + oy
-    return px, py
+    """Convert 0-1000 normalised coords → absolute screen pixels."""
+    win = gw.getActiveWindow() if _SCR_OK else None
+    ox  = win.left if win else 0
+    oy  = win.top  if win else 0
+    return int(nx / 1000 * img_w) + ox, int(ny / 1000 * img_h) + oy
 
+
+# ── Capability class ──────────────────────────────────────────────────────────
 
 class ComputerUseCapability:
     """
-    Provides high-level computer control tools backed by
-    gemini-2.5-computer-use-preview-10-2025.
-
-    The model receives the current screenshot + a task description,
-    then returns one or more actions to execute.
-
-    For each action type the model can return:
-        click       → {"type": "click",    "x": 0-1000, "y": 0-1000, "button": "left|right|double"}
-        type        → {"type": "type",     "text": "..."}
-        key         → {"type": "key",      "key": "enter|escape|tab|..."}
-        hotkey      → {"type": "hotkey",   "modifiers": ["ctrl"], "key": "s"}
-        scroll      → {"type": "scroll",   "direction": "up|down", "clicks": 3}
-        screenshot  → {"type": "screenshot"}   (re-capture and return context)
-        done        → {"type": "done",     "message": "..."}
+    Multi-step screen control backed by gemini-2.5-computer-use-preview-10-2025.
+    Sees the screen → returns structured JSON actions → we execute them.
     """
+
+    _SYSTEM = """
+You are a computer-use agent controlling a Windows desktop.
+You receive a screenshot and a task description.
+Output ONLY a JSON array of actions (no markdown fences, no prose).
+
+Valid action objects:
+  {"type":"click",   "x":0-1000, "y":0-1000, "button":"left|right|double"}
+  {"type":"type",    "text":"..."}
+  {"type":"key",     "key":"enter|escape|tab|backspace|delete|up|down|left|right|space|f1...f12|..."}
+  {"type":"hotkey",  "modifiers":["ctrl"|"alt"|"shift"|"win"], "key":"..."}
+  {"type":"scroll",  "direction":"up|down", "clicks":1-10}
+  {"type":"screenshot"}          <- request fresh capture before next step
+  {"type":"done",    "message":"summary"}
+
+Coordinates are 0-1000 (0,0 = top-left of active window).
+Include "done" as the final action when the task is complete.
+If you are unsure of an element's location, emit {"type":"screenshot"} first.
+"""
 
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -93,233 +112,190 @@ class ComputerUseCapability:
                 from google import genai
                 self._client = genai.Client(api_key=api_key)
             except Exception as e:
-                logger.error(f"ComputerUse client init failed: {e}")
+                logger.error(f"ComputerUse client init: {e}")
 
-    # ── Core action executor ──────────────────────────────────────────────────
+    # ── Action executor ───────────────────────────────────────────────────────
 
-    def _execute_action(self, action: dict, img_w: int, img_h: int) -> str:
-        """Execute a single action dict returned by the model."""
-        atype = action.get("type", "")
+    def _exec(self, action: dict, img_w: int, img_h: int) -> str:
+        """Execute one action dict from the model."""
+        t = action.get("type", "")
 
-        if atype == "click":
-            x, y = _norm_to_screen(action["x"], action["y"], img_w, img_h)
+        if t == "click":
+            if not _PA_OK:
+                return "pyautogui not available"
+            x, y   = _norm_to_screen(action["x"], action["y"], img_w, img_h)
             button = action.get("button", "left")
             pyautogui.moveTo(x, y, duration=0.15)
-            if button == "double":
-                pyautogui.doubleClick(x, y)
-            elif button == "right":
-                pyautogui.rightClick(x, y)
-            else:
-                pyautogui.click(x, y)
+            {"left":   pyautogui.click,
+             "right":  pyautogui.rightClick,
+             "double": pyautogui.doubleClick}.get(button, pyautogui.click)(x, y)
             return f"Clicked ({x},{y}) [{button}]"
 
-        elif atype == "type":
-            text = action.get("text", "")
-            # Fix LLM escape sequences
-            text = (text.replace("\\n", "\n").replace("\\t", "\t")
-                        .replace("\\'", "'").replace("\\\\", "\\"))
-            import keyboard as kb
-            kb.write(text, delay=0.008)
+        elif t == "type":
+            text = (action.get("text", "")
+                    .replace("\\n", "\n").replace("\\t", "\t")
+                    .replace("\\'", "'").replace("\\\\", "\\"))
+            if _KB_OK:
+                _kb.write(text, delay=0.008)
+            elif _PA_OK:
+                pyautogui.typewrite(text, interval=0.03)
+            else:
+                return "No typing backend available"
             return f"Typed {len(text)} chars"
 
-        elif atype == "key":
-            key = action.get("key", "")
-            pyautogui.press(key)
-            return f"Pressed {key}"
+        elif t == "key":
+            if not _PA_OK:
+                return "pyautogui not available"
+            pyautogui.press(action.get("key", ""))
+            return f"Pressed {action.get('key')}"
 
-        elif atype == "hotkey":
+        elif t == "hotkey":
+            if not _PA_OK:
+                return "pyautogui not available"
             mods = action.get("modifiers", [])
             key  = action.get("key", "")
             pyautogui.hotkey(*mods, key)
             return f"Hotkey {'+'.join(mods)}+{key}"
 
-        elif atype == "scroll":
+        elif t == "scroll":
+            if not _PA_OK:
+                return "pyautogui not available"
             direction = action.get("direction", "down")
             clicks    = int(action.get("clicks", 3))
-            amount = clicks if direction == "up" else -clicks
-            pyautogui.scroll(amount)
-            return f"Scrolled {direction} {clicks}"
+            pyautogui.scroll(clicks if direction == "up" else -clicks)
+            return f"Scrolled {direction} ×{clicks}"
 
-        elif atype == "screenshot":
-            return "Screenshot requested (will re-capture)"
+        elif t == "screenshot":
+            return "__SCREENSHOT__"
 
-        elif atype == "done":
-            return f"Done: {action.get('message', 'Task complete')}"
+        elif t == "done":
+            return f"__DONE__:{action.get('message', 'Task complete')}"
 
-        else:
-            return f"Unknown action type: {atype}"
+        return f"Unknown action: {t}"
 
-    # ── Main computer-use call ─────────────────────────────────────────────────
+    # ── Main entry point ──────────────────────────────────────────────────────
 
     def execute_task(self, task_description: str, max_steps: int = 8) -> str:
         """
-        Execute a computer task using the dedicated Computer Use model.
-
-        The model sees the screen, plans actions, and we execute them one by one.
-        Loops up to max_steps times or until the model signals "done".
-
-        Args:
-            task_description: Natural language description of what to do.
-            max_steps: Safety limit on action steps (default 8).
-        Returns:
-            Summary of what was accomplished.
+        Execute a computer task autonomously.
+        Loops up to max_steps iterations, re-capturing the screen each time.
         """
-        if not _SCREEN_AVAILABLE:
-            return "Screen control not available."
+        if not _SCR_OK:
+            return "Screen capture not available."
         if not self._client:
             return "Computer Use model not available (no API key)."
 
-        import json
         from google.genai import types as gt
 
-        SYSTEM = """
-You are a computer-use agent controlling a Windows desktop.
-You receive a screenshot and a task. You output a JSON array of actions to perform.
-
-Each action must be one of:
-  {"type":"click",    "x":0-1000, "y":0-1000, "button":"left|right|double"}
-  {"type":"type",     "text":"string to type"}
-  {"type":"key",      "key":"enter|escape|tab|backspace|delete|up|down|left|right|space|..."}
-  {"type":"hotkey",   "modifiers":["ctrl"|"alt"|"shift"|"win"], "key":"letter or key"}
-  {"type":"scroll",   "direction":"up|down", "clicks":1-10}
-  {"type":"screenshot"}    <- request an updated screenshot before continuing
-  {"type":"done",     "message":"summary of what was accomplished"}
-
-Coordinates are normalised 0-1000 (0,0 = top-left of the active window).
-Output ONLY a JSON array. No explanation text. No markdown fences.
-Stop as soon as the task is accomplished — include a "done" action last.
-Be precise. If unsure where an element is, use type:screenshot to look again.
-"""
-
-        steps_taken = []
+        steps: list[str] = []
         step = 0
 
         while step < max_steps:
-            capture = _capture_window_jpeg()
+            capture = _capture_jpeg()
             if not capture:
                 return "Screen capture failed."
             jpeg_bytes, img_w, img_h = capture
-            img_b64 = base64.b64encode(jpeg_bytes).decode()
+            b64 = base64.b64encode(jpeg_bytes).decode()
 
-            win_title = gw.getActiveWindowTitle() or "unknown"
+            win_title = gw.getActiveWindowTitle() or "unknown" if _SCR_OK else "unknown"
             prompt = (
                 f"Active window: {win_title}\n"
                 f"Task: {task_description}\n"
-                f"Steps already done: {steps_taken[-6:] if steps_taken else 'none'}\n\n"
-                "What actions should be taken next? Output JSON array only."
+                f"Steps done so far: {steps[-5:] or 'none'}\n\n"
+                "Output the next action(s) as a JSON array."
             )
 
             try:
-                response = self._client.models.generate_content(
+                resp = self._client.models.generate_content(
                     model=COMPUTER_USE_MODEL,
                     contents=[
-                        gt.Part(
-                            inline_data=gt.Blob(data=img_b64, mime_type="image/jpeg")
-                        ),
+                        gt.Part(inline_data=gt.Blob(data=b64, mime_type="image/jpeg")),
                         gt.Part(text=prompt),
                     ],
                     config=gt.GenerateContentConfig(
-                        system_instruction=SYSTEM,
+                        system_instruction=self._SYSTEM,
                         temperature=0.05,
                         max_output_tokens=800,
                     )
                 )
             except Exception as e:
-                logger.error(f"Computer use model call failed: {e}")
+                logger.error(f"Computer use call failed: {e}")
                 return f"Computer use error: {e}"
 
-            raw = response.text.strip()
-            # Strip markdown
+            raw = resp.text.strip()
             if raw.startswith("```"):
                 raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
+                raw = raw[4:] if raw.startswith("json") else raw
             raw = raw.strip()
 
             try:
                 actions = json.loads(raw)
             except json.JSONDecodeError:
-                logger.warning(f"Bad JSON from computer use model: {raw[:200]}")
+                logger.warning(f"Bad JSON: {raw[:200]}")
                 break
 
             if not isinstance(actions, list):
                 actions = [actions]
 
+            need_screenshot = False
             for action in actions:
-                atype = action.get("type", "")
-                logger.info(f"ComputerUse action: {action}")
+                result = self._exec(action, img_w, img_h)
+                logger.info(f"CU action {action.get('type')}: {result}")
 
-                if atype == "screenshot":
-                    # Re-capture before next iteration
-                    steps_taken.append("Re-captured screenshot")
+                if result == "__SCREENSHOT__":
+                    steps.append("re-captured")
+                    need_screenshot = True
                     break
-                elif atype == "done":
-                    msg = action.get("message", "Task complete")
-                    steps_taken.append(f"DONE: {msg}")
-                    return f"✓ {msg}\n\nSteps: " + " → ".join(steps_taken)
+                elif result.startswith("__DONE__:"):
+                    msg = result[9:]
+                    steps.append(f"✓ {msg}")
+                    return f"✓ {msg}\n\nSteps: " + " → ".join(steps)
                 else:
-                    result = self._execute_action(action, img_w, img_h)
-                    steps_taken.append(result)
-                    time.sleep(0.3)  # allow UI to update between actions
+                    steps.append(result)
+                    time.sleep(0.25)
 
-            step += 1
+            if not need_screenshot:
+                step += 1
 
-        summary = " → ".join(steps_taken) if steps_taken else "No actions taken"
-        return f"Task attempted ({step} steps): {summary}"
+        return f"Task attempted ({step} steps): " + " → ".join(steps)
 
-    # ── Simpler single-action: click element by description ────────────────────
+    # ── Single-click shortcut ─────────────────────────────────────────────────
 
     def click_element(self, description: str, click_type: str = "left") -> str:
-        """
-        Find a UI element by description and click it.
-        Uses Vision model for locating, then executes the click.
-
-        Args:
-            description: Natural language description of the element.
-            click_type:  "left", "right", or "double".
-        Returns:
-            Result string.
-        """
-        if not _SCREEN_AVAILABLE or not self._client:
+        """Find an element by description and click it (single action)."""
+        if not _SCR_OK or not self._client:
             return "Not available."
 
-        capture = _capture_window_jpeg()
+        capture = _capture_jpeg()
         if not capture:
             return "Screen capture failed."
         jpeg_bytes, img_w, img_h = capture
-        img_b64 = base64.b64encode(jpeg_bytes).decode()
+        b64 = base64.b64encode(jpeg_bytes).decode()
 
         from google.genai import types as gt
-        prompt = (
-            f"Find this element: {description}\n"
-            "Return ONLY a JSON object: "
-            '{"x": 0-1000, "y": 0-1000}\n'
-            "Use the center of the element. No other text."
-        )
         try:
-            response = self._client.models.generate_content(
+            resp = self._client.models.generate_content(
                 model=VISION_MODEL,
                 contents=[
-                    gt.Part(inline_data=gt.Blob(data=img_b64, mime_type="image/jpeg")),
-                    gt.Part(text=prompt),
+                    gt.Part(inline_data=gt.Blob(data=b64, mime_type="image/jpeg")),
+                    gt.Part(text=(
+                        f"Find: {description}\n"
+                        'Return ONLY JSON: {"x":0-1000,"y":0-1000} — centre of element.'
+                    )),
                 ],
                 config=gt.GenerateContentConfig(temperature=0.0, max_output_tokens=60)
             )
-            import json
-            raw = response.text.strip().strip("```json").strip("```").strip()
+            raw    = resp.text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
             coords = json.loads(raw)
             nx, ny = float(coords["x"]), float(coords["y"])
             px, py = _norm_to_screen(nx, ny, img_w, img_h)
-            pyautogui.moveTo(px, py, duration=0.18)
-            if click_type == "double":
-                pyautogui.doubleClick(px, py)
-            elif click_type == "right":
-                pyautogui.rightClick(px, py)
-            else:
-                pyautogui.click(px, py)
-            return f"Clicked '{description}' at screen ({px},{py})"
+            if _PA_OK:
+                pyautogui.moveTo(px, py, duration=0.18)
+                {"left":   pyautogui.click,
+                 "right":  pyautogui.rightClick,
+                 "double": pyautogui.doubleClick}.get(click_type, pyautogui.click)(px, py)
+            return f"Clicked '{description}' at ({px},{py})"
         except Exception as e:
-            logger.error(f"click_element failed: {e}")
             return f"Could not click '{description}': {e}"
 
     # ── ADK tool declarations ─────────────────────────────────────────────────
@@ -330,43 +306,31 @@ Be precise. If unsure where an element is, use type:screenshot to look again.
             gt.FunctionDeclaration(
                 name="computer_use",
                 description=(
-                    "Execute a computer task by controlling the screen. "
-                    "Use this for complex multi-step UI tasks: filling forms, "
-                    "navigating apps, clicking through menus, composing emails, etc. "
-                    "The model will see the screen and perform the actions itself."
+                    "Execute a multi-step computer task by controlling the screen. "
+                    "Use for: filling forms, navigating apps, clicking through menus, "
+                    "composing documents, etc. The model sees the screen and acts."
                 ),
                 parameters=gt.Schema(
                     type=gt.Type.OBJECT,
                     properties={
-                        "task": gt.Schema(
-                            type=gt.Type.STRING,
-                            description="Clear description of what to do on screen"
-                        ),
-                        "max_steps": gt.Schema(
-                            type=gt.Type.INTEGER,
-                            description="Max action steps (default 8, max 15)"
-                        ),
+                        "task":      gt.Schema(type=gt.Type.STRING,
+                                               description="What to do on screen"),
+                        "max_steps": gt.Schema(type=gt.Type.INTEGER,
+                                               description="Max steps (default 8, max 15)"),
                     },
                     required=["task"]
                 )
             ),
             gt.FunctionDeclaration(
                 name="click_element",
-                description=(
-                    "Find a specific UI element on screen by description and click it. "
-                    "Use for simple single-click tasks."
-                ),
+                description="Find a UI element by description and click it (single click).",
                 parameters=gt.Schema(
                     type=gt.Type.OBJECT,
                     properties={
-                        "description": gt.Schema(
-                            type=gt.Type.STRING,
-                            description="Description of the UI element to click"
-                        ),
-                        "click_type": gt.Schema(
-                            type=gt.Type.STRING,
-                            description="'left', 'right', or 'double'"
-                        ),
+                        "description": gt.Schema(type=gt.Type.STRING,
+                                                  description="Description of element"),
+                        "click_type":  gt.Schema(type=gt.Type.STRING,
+                                                  description="'left','right','double'"),
                     },
                     required=["description"]
                 )
@@ -375,11 +339,9 @@ Be precise. If unsure where an element is, use type:screenshot to look again.
 
     def handle_tool_call(self, name: str, args: dict) -> str:
         if name == "computer_use":
-            max_steps = min(int(args.get("max_steps", 8)), 15)
-            return self.execute_task(args.get("task", ""), max_steps=max_steps)
+            return self.execute_task(args.get("task", ""),
+                                     max_steps=min(int(args.get("max_steps", 8)), 15))
         elif name == "click_element":
-            return self.click_element(
-                args.get("description", ""),
-                args.get("click_type", "left")
-            )
-        return f"Unknown computer use tool: {name}"
+            return self.click_element(args.get("description", ""),
+                                      args.get("click_type", "left"))
+        return f"Unknown tool: {name}"
