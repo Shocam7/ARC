@@ -1,12 +1,15 @@
-# ─── ARC v2 Requirements ──────────────────────────────────────────────────────
+# ─── ARC Requirements — Vertex AI Edition ─────────────────────────────────────
 # Python >= 3.11 required (3.12 recommended)
-# All dependencies are free / open source or part of Google's free tier.
+#
+# Authentication: Application Default Credentials (ADC)
+#   Run once: gcloud auth application-default login
+#   OR set:   GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 
-# ── Google AI SDK (includes Gemini Live API + ADK support) ────────────────────
-google-genai>=1.0.0             # Unified Gemini SDK — Live API, Flash, Pro, Computer Use
-google-adk>=0.3.0               # Google Agent Development Kit
-google-auth>=2.28.0
-google-cloud-aiplatform>=1.50.0 # Optional: Vertex AI backend
+# ── Google Cloud / Vertex AI ──────────────────────────────────────────────────
+google-genai>=1.0.0              # Unified Gemini SDK — Live API, Flash, Pro, etc.
+google-auth>=2.28.0              # ADC credential handling
+google-auth-oauthlib>=1.2.0      # OAuth flow for gcloud auth application-default
+google-cloud-aiplatform>=1.50.0  # Vertex AI platform client (model discovery, etc.)
 
 # ── PyQt6 UI ──────────────────────────────────────────────────────────────────
 PyQt6>=6.7.0
@@ -14,23 +17,23 @@ PyQt6-Qt6>=6.7.0
 PyQt6-sip>=13.8.0
 
 # ── Computer Vision / Screen ──────────────────────────────────────────────────
-opencv-python>=4.9.0            # Webcam capture (UserTile)
-Pillow>=10.3.0                  # Screenshot capture + JPEG encoding
-pygetwindow>=0.0.9              # Active window detection + bounding box
+opencv-python>=4.9.0             # Webcam capture (UserTile + MiniCamWidget)
+Pillow>=10.3.0                   # Screenshot capture + JPEG encoding
+pygetwindow>=0.0.9               # Active window detection + bounding box
 
 # ── Input Automation ──────────────────────────────────────────────────────────
-pyautogui>=0.9.54               # Mouse + keyboard automation
-keyboard>=0.13.5                # Low-level keyboard events (requires admin on Linux)
+pyautogui>=0.9.54                # Mouse + keyboard automation
+keyboard>=0.13.5                 # Low-level keyboard events (needs admin on Linux)
 
 # ── Audio I/O ─────────────────────────────────────────────────────────────────
-pyaudio>=0.2.14                 # Real-time mic capture + speaker playback (16kHz/24kHz)
+pyaudio>=0.2.14                  # Real-time mic capture + speaker playback
 
 # ── Web Automation ────────────────────────────────────────────────────────────
-selenium>=4.20.0                # Chrome automation for web browsing capability
-beautifulsoup4>=4.12.3          # HTML parsing — extracts readable text from pages
-webdriver-manager>=4.0.1        # Auto-downloads matching ChromeDriver
+selenium>=4.20.0                 # Chrome automation for web browsing
+beautifulsoup4>=4.12.3           # HTML parsing — extracts readable text from pages
+webdriver-manager>=4.0.1         # Auto-downloads matching ChromeDriver
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
-python-dotenv>=1.0.1            # Load .env configuration file
+python-dotenv>=1.0.1             # Load .env configuration file
 requests>=2.32.0
 chardet>=5.2.0
