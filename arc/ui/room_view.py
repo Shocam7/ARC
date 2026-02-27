@@ -1,192 +1,270 @@
 """
-RoomView — The ARC meeting room.
-Displays user tile + agent tiles in a responsive grid.
-Houses the control bar, input bar, and transcript panel.
+RoomView — Google Meet–style meeting room.
+
+Layout:
+  • Full-window dark tile grid (auto-sizes to fill space like Meet)
+  • Narrow chat panel slides in on the right
+  • Slim bottom control bar
+  • Header: time + room name (no title bar)
+
+Tile behaviour mirrors Google Meet:
+  1 tile  → centered, fills ~80% of space
+  2 tiles → side by side 50/50
+  3 tiles → top 2 + bottom 1 (centered)
+  4 tiles → 2×2 grid
+  5–6     → 2+3 or 3+3 rows
+  7+      → 3-column grid
 """
 
 import logging
-from typing import Optional
+import math
+import cv2
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLabel, QPushButton, QLineEdit, QTextEdit,
-    QScrollArea, QSizePolicy, QFrame, QSplitter
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QLineEdit, QTextEdit, QFrame,
+    QSizePolicy, QApplication
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve
-from PyQt6.QtGui import QPainter, QColor, QLinearGradient
+from PyQt6.QtCore import Qt, QTimer, QDateTime, pyqtSignal, QRect
+from PyQt6.QtGui import QPainter, QColor, QBrush, QImage, QPixmap, QPainterPath
 
 from arc.ui.agent_tile import AgentTile
-from arc.ui.user_tile import UserTile
 from arc.ui.create_agent_dialog import CreateAgentDialog
 
 logger = logging.getLogger("arc.ui.room")
 
 
-class ScanlineOverlay(QWidget):
-    """Subtle scanline effect painted over the room view for depth."""
+# ── User webcam tile ──────────────────────────────────────────────────────────
 
-    def __init__(self, parent=None):
+class UserTile(QWidget):
+    """Live webcam feed for the local user."""
+
+    def __init__(self, username: str = "You", parent=None):
         super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.username = username
+        self.setObjectName("meet_tile")
+        self._pix  = None
+        self._cap  = None
+        self._muted   = False
+        self._cam_off = False
+        self._init_camera()
+
+    def _init_camera(self):
+        try:
+            self._cap = cv2.VideoCapture(0)
+            if self._cap.isOpened():
+                self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
+                self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+                t = QTimer(self)
+                t.timeout.connect(self._grab)
+                t.start(33)
+        except Exception:
+            pass
+
+    def _grab(self):
+        if not self._cap or not self._cap.isOpened() or self._cam_off:
+            return
+        ret, frame = self._cap.read()
+        if not ret:
+            return
+        frame = cv2.flip(frame, 1)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = frame.shape
+        img = QImage(frame.data, w, h, ch * w, QImage.Format.Format_RGB888)
+        self._pix = QPixmap.fromImage(img)
+        self.update()
+
+    def toggle_cam(self):
+        self._cam_off = not self._cam_off
+        self.update()
+
+    def toggle_mute(self) -> bool:
+        self._muted = not self._muted
+        return self._muted
 
     def paintEvent(self, event):
         p = QPainter(self)
-        p.setOpacity(0.025)
-        line_color = QColor(0, 200, 255)
-        p.setPen(line_color)
-        y = 0
-        while y < self.height():
-            p.drawLine(0, y, self.width(), y)
-            y += 4
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Rounded clip
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, self.width(), self.height(), 8, 8)
+        p.setClipPath(path)
+
+        # Background
+        p.fillRect(self.rect(), QColor(0x3c, 0x40, 0x43))
+
+        # Camera frame
+        if self._pix and not self._cam_off:
+            scaled = self._pix.scaled(
+                self.size(),
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            ox = (scaled.width()  - self.width())  // 2
+            oy = (scaled.height() - self.height()) // 2
+            p.drawPixmap(-ox, -oy, scaled)
+        else:
+            # Placeholder initials
+            init = self.username[0].upper() if self.username else "?"
+            p.setPen(QColor(0x9a, 0xa0, 0xa6))
+            from PyQt6.QtGui import QFont
+            f = QFont("Segoe UI", int(min(self.width(), self.height()) * 0.22), QFont.Weight.Medium)
+            p.setFont(f)
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, init)
+
+        # Name badge
+        from PyQt6.QtGui import QFont
+        badge_text = self.username + (" 🔇" if self._muted else "")
+        p.setPen(QColor(0xff, 0xff, 0xff))
+        p.setFont(QFont("Segoe UI", 10, QFont.Weight.Medium))
+        fm = p.fontMetrics()
+        tw = fm.horizontalAdvance(badge_text) + 16
+        th = fm.height() + 6
+        badge_r = QRect(8, self.height() - th - 8, tw, th)
+        p.setOpacity(0.7)
+        p.setBrush(QBrush(QColor(0, 0, 0)))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(badge_r, 4, 4)
+        p.setOpacity(1.0)
+        p.setPen(QColor(0xff, 0xff, 0xff))
+        p.drawText(badge_r, Qt.AlignmentFlag.AlignCenter, badge_text)
+
         p.end()
 
-
-class TranscriptPanel(QWidget):
-    """Side panel showing conversation transcript."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("transcript_panel")
-        self.setFixedWidth(260)
-        self._init_ui()
-
-    def _init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        title = QLabel("TRANSCRIPT")
-        title.setObjectName("transcript_title")
-        layout.addWidget(title)
-
-        self._text = QTextEdit()
-        self._text.setObjectName("transcript_view")
-        self._text.setReadOnly(True)
-        layout.addWidget(self._text)
-
-    def append(self, text: str):
-        self._text.append(text)
-        # Auto-scroll to bottom
-        sb = self._text.verticalScrollBar()
-        sb.setValue(sb.maximum())
+    def cleanup(self):
+        if self._cap:
+            self._cap.release()
 
 
-class ControlBar(QWidget):
-    """Bottom control bar with mic, camera, add-AF and end-call buttons."""
+# ── Adaptive tile grid ────────────────────────────────────────────────────────
 
-    add_af_clicked   = pyqtSignal()
-    mic_toggled      = pyqtSignal(bool)   # True = muted
-    cam_toggled      = pyqtSignal(bool)   # True = cam off
-    end_call_clicked = pyqtSignal()
+class MeetTileGrid(QWidget):
+    """
+    Auto-resizing grid that fills available space like Google Meet.
+    All positioning is done manually in resizeEvent (no QLayout).
+    """
+
+    MARGIN = 12
+    GAP    = 8
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName("control_bar")
-        self.setFixedHeight(72)
-        self._muted = False
-        self._cam_off = False
-        self._init_ui()
+        self.setObjectName("room_view")
+        self.setStyleSheet("background-color: #202124;")
+        self._tiles: list[QWidget] = []
 
-    def _init_ui(self):
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(24, 0, 24, 0)
-        layout.setSpacing(12)
+    def add_tile(self, tile: QWidget):
+        tile.setParent(self)
+        self._tiles.append(tile)
+        tile.show()
+        self._relayout()
 
-        # ── Left: room info ──────────────────────────────────
-        self._room_label = QLabel("ARC://ROOM")
-        self._room_label.setStyleSheet(
-            "color: #4a5a6e; font-size: 10px; letter-spacing: 3px;"
-        )
-        layout.addWidget(self._room_label)
-        layout.addStretch()
+    def remove_tile(self, tile: QWidget):
+        if tile in self._tiles:
+            self._tiles.remove(tile)
+            tile.hide()
+            tile.setParent(None)   # type: ignore[arg-type]
+        self._relayout()
 
-        # ── Center: controls ─────────────────────────────────
-        self._mic_btn = QPushButton("🎤")
-        self._mic_btn.setObjectName("ctrl_btn")
-        self._mic_btn.setToolTip("Toggle Microphone")
-        self._mic_btn.clicked.connect(self._toggle_mic)
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._relayout()
 
-        self._cam_btn = QPushButton("📷")
-        self._cam_btn.setObjectName("ctrl_btn")
-        self._cam_btn.setToolTip("Toggle Camera")
-        self._cam_btn.clicked.connect(self._toggle_cam)
+    def _relayout(self):
+        n = len(self._tiles)
+        if n == 0:
+            return
 
-        self._add_btn = QPushButton("+ ADD ARTIFICIAL FRIEND")
-        self._add_btn.setObjectName("add_af_btn")
-        self._add_btn.clicked.connect(self.add_af_clicked)
+        W = self.width()  - 2 * self.MARGIN
+        H = self.height() - 2 * self.MARGIN
+        g = self.GAP
 
-        self._end_btn = QPushButton("✕ END SESSION")
-        self._end_btn.setObjectName("end_btn")
-        self._end_btn.clicked.connect(self.end_call_clicked)
+        # ── Compute grid dimensions ──────────────────────────────────────────
+        if n == 1:
+            rows, cols = 1, 1
+        elif n == 2:
+            rows, cols = 1, 2
+        elif n == 3:
+            rows, cols = 1, 3
+        elif n == 4:
+            rows, cols = 2, 2
+        elif n <= 6:
+            rows, cols = 2, 3
+        elif n <= 9:
+            rows, cols = 3, 3
+        else:
+            cols = math.ceil(math.sqrt(n))
+            rows = math.ceil(n / cols)
 
-        for btn in [self._mic_btn, self._cam_btn]:
-            layout.addWidget(btn)
-        layout.addWidget(self._add_btn)
-        layout.addWidget(self._end_btn)
-        layout.addStretch()
+        tw = (W - g * (cols - 1)) // cols
+        th = (H - g * (rows - 1)) // rows
 
-        # ── Right: timer ─────────────────────────────────────
-        self._timer_label = QLabel("00:00")
-        self._timer_label.setStyleSheet(
-            "color: #4a5a6e; font-size: 11px; letter-spacing: 3px; font-family: monospace;"
-        )
-        self._elapsed = 0
-        self._clock = QTimer(self)
-        self._clock.timeout.connect(self._tick)
-        self._clock.start(1000)
-        layout.addWidget(self._timer_label)
+        # Special single-tile: center with 16:9 if possible
+        if n == 1:
+            ideal_w = min(W, int(th * 16 / 9))
+            ideal_h = min(H, int(tw *  9 / 16))
+            tw = ideal_w
+            th = ideal_h
 
-    def _tick(self):
-        self._elapsed += 1
-        m, s = divmod(self._elapsed, 60)
-        self._timer_label.setText(f"{m:02d}:{s:02d}")
-
-    def _toggle_mic(self):
-        self._muted = not self._muted
-        self._mic_btn.setText("🔇" if self._muted else "🎤")
-        self._mic_btn.setStyleSheet(
-            "background-color: rgba(255,59,92,0.2); border-color: rgba(255,59,92,0.5);"
-            if self._muted else ""
-        )
-        self.mic_toggled.emit(self._muted)
-
-    def _toggle_cam(self):
-        self._cam_off = not self._cam_off
-        self._cam_btn.setText("🚫" if self._cam_off else "📷")
-        self.cam_toggled.emit(self._cam_off)
-
-    def set_room_name(self, name: str):
-        self._room_label.setText(f"ARC://{name.upper()}")
+        # ── Place tiles ──────────────────────────────────────────────────────
+        for i, tile in enumerate(self._tiles):
+            row, col = divmod(i, cols)
+            # Centre last row if tiles don't fully fill it
+            tiles_in_row = min(cols, n - row * cols)
+            row_w_total  = tiles_in_row * tw + (tiles_in_row - 1) * g
+            x_offset     = self.MARGIN + (W - row_w_total) // 2
+            x = x_offset + col * (tw + g)
+            y = self.MARGIN + row * (th + g)
+            tile.setGeometry(x, y, tw, th)
 
 
-class InputBar(QWidget):
-    """Text input bar for sending messages to the AF(s)."""
+# ── Chat / transcript panel ───────────────────────────────────────────────────
 
+class ChatPanel(QWidget):
     message_sent = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName("input_bar")
-        self.setFixedHeight(64)
-        self._init_ui()
+        self.setObjectName("chat_panel")
+        self.setFixedWidth(300)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self._build()
 
-    def _init_ui(self):
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(20, 12, 20, 12)
-        layout.setSpacing(10)
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        hdr = QLabel("In-call messages")
+        hdr.setObjectName("chat_title")
+        lay.addWidget(hdr)
+
+        self._view = QTextEdit()
+        self._view.setObjectName("chat_view")
+        self._view.setReadOnly(True)
+        lay.addWidget(self._view, 1)
+
+        # Input
+        inp_bar = QWidget()
+        inp_bar.setObjectName("input_bar")
+        inp_bar.setFixedHeight(60)
+        il = QHBoxLayout(inp_bar)
+        il.setContentsMargins(10, 10, 10, 10)
+        il.setSpacing(8)
 
         self._input = QLineEdit()
-        self._input.setObjectName("text_input")
-        self._input.setPlaceholderText("Message your Artificial Friend(s)...")
+        self._input.setObjectName("msg_input")
+        self._input.setPlaceholderText("Message…")
         self._input.returnPressed.connect(self._send)
 
-        self._send_btn = QPushButton("➤")
-        self._send_btn.setObjectName("send_btn")
-        self._send_btn.clicked.connect(self._send)
+        send = QPushButton("➤")
+        send.setObjectName("send_btn")
+        send.clicked.connect(self._send)
 
-        layout.addWidget(self._input)
-        layout.addWidget(self._send_btn)
+        il.addWidget(self._input)
+        il.addWidget(send)
+        lay.addWidget(inp_bar)
 
     def _send(self):
         text = self._input.text().strip()
@@ -194,206 +272,220 @@ class InputBar(QWidget):
             self.message_sent.emit(text)
             self._input.clear()
 
+    def append(self, text: str):
+        self._view.append(text)
+        sb = self._view.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
-class TileGrid(QWidget):
-    """Responsive grid that holds all video tiles."""
+
+# ── Control bar ───────────────────────────────────────────────────────────────
+
+class MeetControlBar(QWidget):
+    add_af_clicked   = pyqtSignal()
+    mic_toggled      = pyqtSignal(bool)
+    cam_toggled      = pyqtSignal(bool)
+    chat_toggled     = pyqtSignal()
+    end_call_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName("tiles_container")
-        self._layout = QGridLayout(self)
-        self._layout.setContentsMargins(20, 20, 20, 20)
-        self._layout.setSpacing(14)
-        self._tiles: list[QWidget] = []
+        self.setObjectName("ctrl_bar")
+        self.setFixedHeight(72)
+        self._muted   = False
+        self._cam_off = False
+        self._elapsed = 0
+        self._build()
 
-    def add_tile(self, tile: QWidget):
-        self._tiles.append(tile)
-        self._relayout()
+        clk = QTimer(self)
+        clk.timeout.connect(self._tick)
+        clk.start(1000)
 
-    def remove_tile(self, tile: QWidget):
-        if tile in self._tiles:
-            self._tiles.remove(tile)
-            tile.setParent(None)
-            self._relayout()
+    def _build(self):
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(20, 0, 20, 0)
+        lay.setSpacing(10)
 
-    def _relayout(self):
-        # Clear grid
-        while self._layout.count():
-            item = self._layout.takeAt(0)
-            if item.widget():
-                item.widget().setParent(None)
+        # Left: clock
+        self._time_lbl = QLabel("00:00")
+        self._time_lbl.setObjectName("room_time")
+        lay.addWidget(self._time_lbl)
+        lay.addStretch()
 
-        n = len(self._tiles)
-        if n == 0:
-            return
+        # Centre controls
+        self._mic_btn = self._round_btn("🎤")
+        self._mic_btn.clicked.connect(self._tog_mic)
 
-        # Calculate optimal columns
-        cols = 1 if n == 1 else (2 if n <= 4 else 3)
-        for i, tile in enumerate(self._tiles):
-            row, col = divmod(i, cols)
-            self._layout.addWidget(tile, row, col)
+        self._cam_btn = self._round_btn("📷")
+        self._cam_btn.clicked.connect(self._tog_cam)
 
-        # Make tiles fill space equally
-        for c in range(cols):
-            self._layout.setColumnStretch(c, 1)
+        add_btn = QPushButton("+ Add AI Friend")
+        add_btn.setObjectName("add_af_btn")
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.clicked.connect(self.add_af_clicked)
 
+        end_btn = QPushButton("Leave")
+        end_btn.setObjectName("end_btn")
+        end_btn.clicked.connect(self.end_call_clicked)
+
+        for w in [self._mic_btn, self._cam_btn, add_btn, end_btn]:
+            lay.addWidget(w)
+        lay.addStretch()
+
+        # Right: chat toggle
+        chat_btn = self._round_btn("💬")
+        chat_btn.clicked.connect(self.chat_toggled)
+        lay.addWidget(chat_btn)
+
+    def _round_btn(self, icon: str) -> QPushButton:
+        b = QPushButton(icon)
+        b.setObjectName("ctrl_round")
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        return b
+
+    def _tick(self):
+        self._elapsed += 1
+        m, s = divmod(self._elapsed, 60)
+        self._time_lbl.setText(f"{m:02d}:{s:02d}")
+
+    def _tog_mic(self):
+        self._muted = not self._muted
+        self._mic_btn.setText("🔇" if self._muted else "🎤")
+        self._mic_btn.setProperty("active", "false" if self._muted else "true")
+        self.mic_toggled.emit(self._muted)
+
+    def _tog_cam(self):
+        self._cam_off = not self._cam_off
+        self._cam_btn.setText("🚫" if self._cam_off else "📷")
+        self.cam_toggled.emit(self._cam_off)
+
+
+# ── Room view ─────────────────────────────────────────────────────────────────
 
 class RoomView(QWidget):
-    """The main meeting room widget."""
+    """Google Meet–style ARC meeting room."""
 
-    leave_room = pyqtSignal()
+    leave_room            = pyqtSignal()
+    agent_spawn_requested = pyqtSignal(dict)   # ← class-level signal (bug fixed)
 
     def __init__(self, room_name: str, username: str, orchestrator, parent=None):
         super().__init__(parent)
-        self.room_name = room_name
-        self.username = username
+        self.room_name   = room_name
+        self.username    = username
         self.orchestrator = orchestrator
         self.setObjectName("room_view")
-        self._agent_tiles: dict[str, AgentTile] = {}
-        self._transcript = None
-        self._init_ui()
-        self._connect_orchestrator()
+        self.setStyleSheet("background-color: #202124;")
 
-    def _init_ui(self):
+        self._agent_tiles: dict[str, AgentTile] = {}
+        self._chat_visible = True
+        self._overlay = None   # ScreenOverlayWindow (created on demand)
+
+        self._build_ui()
+        self.orchestrator.routing_decision.connect(self._on_routing)
+
+    # ── Layout ────────────────────────────────────────────────────────────────
+
+    def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Header ────────────────────────────────────────────
-        header = QWidget()
-        header.setObjectName("header_bar")
-        hdr_layout = QHBoxLayout(header)
-        hdr_layout.setContentsMargins(20, 0, 20, 0)
+        # ── Slim top bar ──────────────────────────────────────────────────────
+        top = QWidget()
+        top.setObjectName("room_header")
+        top.setFixedHeight(44)
+        tl = QHBoxLayout(top)
+        tl.setContentsMargins(16, 0, 16, 0)
 
         logo = QLabel("ARC")
-        logo.setObjectName("header_arc")
-        dot = QLabel("●")
-        dot.setObjectName("header_dot")
+        logo.setStyleSheet("color:#8ab4f8;font-size:15px;font-weight:700;")
 
-        room_label = QLabel(self.room_name.upper())
-        room_label.setStyleSheet(
-            "color: #8ba0b8; font-size: 11px; letter-spacing: 4px;"
-        )
+        self._room_lbl = QLabel(self.room_name)
+        self._room_lbl.setStyleSheet("color:#9aa0a6;font-size:13px;")
 
-        self._orch_badge = QLabel("ORCHESTRATOR ACTIVE")
-        self._orch_badge.setObjectName("orch_badge")
+        self._orch_badge = QLabel("Orchestrator active")
+        self._orch_badge.setObjectName("orch_banner")
         self._orch_badge.hide()
 
-        conn = QLabel("● CONNECTED")
-        conn.setObjectName("connection_status")
+        tl.addWidget(logo)
+        tl.addSpacing(12)
+        tl.addWidget(self._room_lbl)
+        tl.addStretch()
+        tl.addWidget(self._orch_badge)
+        root.addWidget(top)
 
-        hdr_layout.addWidget(logo)
-        hdr_layout.addWidget(dot)
-        hdr_layout.addSpacing(10)
-        hdr_layout.addWidget(room_label)
-        hdr_layout.addStretch()
-        hdr_layout.addWidget(self._orch_badge)
-        hdr_layout.addSpacing(16)
-        hdr_layout.addWidget(conn)
+        # ── Main area: tile grid + chat ───────────────────────────────────────
+        mid = QHBoxLayout()
+        mid.setContentsMargins(0, 0, 0, 0)
+        mid.setSpacing(0)
 
-        root.addWidget(header)
+        self._grid = MeetTileGrid()
+        mid.addWidget(self._grid, 1)
 
-        # ── Main area: grid + transcript ─────────────────────
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setStyleSheet("QSplitter::handle { background: rgba(0,200,255,0.08); width: 1px; }")
-        splitter.setHandleWidth(1)
+        self._chat = ChatPanel()
+        self._chat.message_sent.connect(self._on_message)
+        mid.addWidget(self._chat)
 
-        # Tile grid in scroll area
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setObjectName("root_bg")
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        mid_widget = QWidget()
+        mid_widget.setLayout(mid)
+        root.addWidget(mid_widget, 1)
 
-        grid_container = QWidget()
-        grid_container.setObjectName("root_bg")
-        grid_vl = QVBoxLayout(grid_container)
-        grid_vl.setContentsMargins(0, 0, 0, 0)
-        grid_vl.setSpacing(0)
-
-        self._tile_grid = TileGrid()
-        grid_vl.addWidget(self._tile_grid)
-        grid_vl.addStretch()
-
-        scroll.setWidget(grid_container)
-        splitter.addWidget(scroll)
-
-        # Transcript panel
-        self._transcript = TranscriptPanel()
-        splitter.addWidget(self._transcript)
-        splitter.setSizes([800, 260])
-
-        root.addWidget(splitter, 1)
-
-        # ── Input bar ─────────────────────────────────────────
-        self._input_bar = InputBar()
-        self._input_bar.message_sent.connect(self._on_message)
-        root.addWidget(self._input_bar)
-
-        # ── Control bar ───────────────────────────────────────
-        self._ctrl_bar = ControlBar()
-        self._ctrl_bar.set_room_name(self.room_name)
-        self._ctrl_bar.add_af_clicked.connect(self._show_create_dialog)
-        self._ctrl_bar.end_call_clicked.connect(self.leave_room)
-        self._ctrl_bar.mic_toggled.connect(self._on_mic_toggle)
-        root.addWidget(self._ctrl_bar)
+        # ── Control bar ───────────────────────────────────────────────────────
+        self._ctrl = MeetControlBar()
+        self._ctrl.add_af_clicked.connect(self._show_create_dialog)
+        self._ctrl.end_call_clicked.connect(self.leave_room)
+        self._ctrl.chat_toggled.connect(self._toggle_chat)
+        self._ctrl.mic_toggled.connect(
+            lambda muted: self._log("🎤 Muted" if muted else "🎤 Unmuted")
+        )
+        self._ctrl.cam_toggled.connect(
+            lambda off: self._user_tile.toggle_cam() if hasattr(self, "_user_tile") else None
+        )
+        root.addWidget(self._ctrl)
 
         # Add user tile
         self._user_tile = UserTile(username=self.username)
-        self._tile_grid.add_tile(self._user_tile)
+        self._grid.add_tile(self._user_tile)
 
-        # Scanline overlay (cosmetic)
-        self._scanline = ScanlineOverlay(self)
-        self._scanline.resize(self.size())
+    # ── Chat visibility ────────────────────────────────────────────────────────
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._scanline.resize(self.size())
+    def _toggle_chat(self):
+        self._chat_visible = not self._chat_visible
+        self._chat.setVisible(self._chat_visible)
 
-    def _connect_orchestrator(self):
-        self.orchestrator.routing_decision.connect(self._on_routing)
-
-    # ── AF Management ─────────────────────────────────────────────────────────
+    # ── Create AF dialog ───────────────────────────────────────────────────────
 
     def _show_create_dialog(self):
         dlg = CreateAgentDialog(self)
         dlg.agent_created.connect(self._spawn_agent)
-        # Center on screen
         dlg.adjustSize()
+        # Centre over this widget
+        geo = self.geometry()
         dlg.move(
             self.mapToGlobal(self.rect().center()) - dlg.rect().center()
         )
         dlg.exec()
 
     def _spawn_agent(self, config: dict):
-        """Create a new AF tile and register with orchestrator."""
         name = config["name"]
         if name in self._agent_tiles:
-            self._log(f"⚠ Agent {name} already exists.")
+            self._log(f"⚠ {name} already exists")
             return
-
-        # Create tile
         tile = AgentTile(agent_name=name, persona=config.get("persona", ""))
-        tile.clicked.connect(lambda n: self._log(f"[{n}] tile clicked"))
+        tile.clicked.connect(lambda n: self._log(f"[{n}] selected"))
         self._agent_tiles[name] = tile
-        self._tile_grid.add_tile(tile)
+        self._grid.add_tile(tile)
 
-        # Signal room owner to create the actual agent
-        # (RoomView emits upward; MainWindow/RoomSession handles agent creation)
+        # Emit upward so MainWindow can create the actual AF agent
         self.agent_spawn_requested.emit(config)
 
-        # Update orchestrator badge
         if self.orchestrator.agent_count >= 2:
             self._orch_badge.show()
+        self._log(f"🤖 {name} joined the room")
 
-        self._log(f"🤖 Artificial Friend [{name}] joined the room")
-
-    # Declare the signal (must be at class level; patched here for clarity)
-    from PyQt6.QtCore import pyqtSignal as _sig
-    agent_spawn_requested = _sig(dict)
+    # ── Agent signal wiring ────────────────────────────────────────────────────
 
     def connect_agent_signals(self, agent):
-        """Wire an AF agent's signals to its tile and transcript."""
+        """Wire an AF's Qt signals to its tile + chat."""
         name = agent.name
         tile = self._agent_tiles.get(name)
         if not tile:
@@ -402,35 +494,67 @@ class RoomView(QWidget):
         agent.speaking_ended.connect(lambda: tile.set_speaking(False))
         agent.status_changed.connect(lambda t, s: tile.set_status(t, s))
         agent.text_received.connect(self._log)
+        # Computer use overlay
+        agent.computer_use_started.connect(
+            lambda n=name: self._show_overlay(n)
+        )
+        agent.computer_use_ended.connect(self._hide_overlay)
 
     def remove_agent(self, name: str):
         tile = self._agent_tiles.pop(name, None)
         if tile:
-            self._tile_grid.remove_tile(tile)
+            self._grid.remove_tile(tile)
         if self.orchestrator.agent_count < 2:
             self._orch_badge.hide()
 
-    # ── Input handling ────────────────────────────────────────────────────────
+    # ── Screen overlay ─────────────────────────────────────────────────────────
+
+    def _show_overlay(self, agent_name: str):
+        """Show the floating overlay during computer use."""
+        from arc.ui.screen_overlay import ScreenOverlayWindow
+        if self._overlay:
+            self._overlay.cleanup()
+        self._overlay = ScreenOverlayWindow(
+            agent_name=agent_name,
+            username=self.username
+        )
+        self._overlay.stop_requested.connect(self._on_overlay_stop)
+        self._overlay.show()
+        self._log(f"🖥 {agent_name} is now controlling the screen")
+
+    def _hide_overlay(self):
+        if self._overlay:
+            self._overlay.cleanup()
+            self._overlay = None
+        self._log("✅ Screen control ended")
+
+    def _on_overlay_stop(self):
+        """User clicked Stop in the overlay."""
+        self._hide_overlay()
+        # TODO: signal the agent to abort current task
+        self._log("⏹ Screen control stopped by user")
+
+    # ── Input handling ─────────────────────────────────────────────────────────
 
     def _on_message(self, text: str):
-        self._log(f"[YOU] {text}")
+        self._log(f"[You] {text}")
         target = self.orchestrator.dispatch_text(text)
         if target:
             tile = self._agent_tiles.get(target)
             if tile:
                 tile.set_thinking()
         elif not self._agent_tiles:
-            self._log("ℹ Add an Artificial Friend to start a conversation.")
-
-    def _on_mic_toggle(self, muted: bool):
-        self._log("🎤 Microphone muted" if muted else "🎤 Microphone active")
+            self._log("ℹ Add an AI Friend to start a conversation")
 
     def _on_routing(self, agent_name: str, reason: str):
-        self._log(f"[ORCH → {agent_name}] {reason}")
+        self._log(f"[→ {agent_name}] {reason}")
 
     def _log(self, text: str):
-        if self._transcript:
-            self._transcript.append(text)
+        self._chat.append(text)
+
+    # ── Cleanup ────────────────────────────────────────────────────────────────
 
     def cleanup(self):
         self._user_tile.cleanup()
+        if self._overlay:
+            self._overlay.cleanup()
