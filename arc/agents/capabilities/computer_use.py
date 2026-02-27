@@ -1,11 +1,16 @@
 """
-ComputerUseCapability — Screen control via gemini-2.5-computer-use-preview-10-2025.
+ComputerUseCapability — Screen control via Vertex AI.
+
+Uses gemini-2.5-computer-use-preview-04-2025 on Vertex AI.
+Falls back to VISION_MODEL if the Computer Use model is unavailable.
+
+Authentication: Vertex AI ADC — no api_key.
 
 Screenshot capture notes
 ────────────────────────
 The ScreenOverlayWindow (arc/ui/screen_overlay.py) has WDA_EXCLUDEFROMCAPTURE
-set on it by Windows, so PIL's ImageGrab.grab() automatically omits those pixels.
-No special capture logic is needed here — the OS handles it transparently.
+applied by Windows OS, so PIL's ImageGrab.grab() automatically omits those
+overlay pixels. Gemini sees the clean desktop, not the floating tiles.
 """
 
 import base64
@@ -32,26 +37,27 @@ try:
     _KB_OK = True
 except ImportError:
     _KB_OK = False
-    logger.warning("keyboard not available — type actions will fall back to pyautogui")
+    logger.warning("keyboard not available — typing falls back to pyautogui")
 
 try:
     import pygetwindow as gw
-    from PIL import ImageGrab, Image
+    from PIL import ImageGrab
     _SCR_OK = True
 except ImportError:
     _SCR_OK = False
     logger.warning("pygetwindow/PIL not available — screen capture disabled")
 
 from arc.core.models import COMPUTER_USE_MODEL, VISION_MODEL
+from arc.core.vertex_config import make_standard_client
 
 
-# ── Screen capture ────────────────────────────────────────────────────────────
+# ── Screen capture ─────────────────────────────────────────────────────────────
 
 def _capture_jpeg(quality: int = 85) -> Optional[tuple[bytes, int, int]]:
     """
     Capture the active window as JPEG bytes.
-    The ScreenOverlayWindow is invisible here thanks to WDA_EXCLUDEFROMCAPTURE.
-    Returns (jpeg_bytes, px_width, px_height) or None.
+    WDA_EXCLUDEFROMCAPTURE (set on ScreenOverlayWindow) ensures overlay tiles
+    are invisible to this capture — Gemini sees the clean desktop.
     """
     if not _SCR_OK:
         return None
@@ -77,12 +83,14 @@ def _norm_to_screen(nx: float, ny: float, img_w: int, img_h: int) -> tuple[int, 
     return int(nx / 1000 * img_w) + ox, int(ny / 1000 * img_h) + oy
 
 
-# ── Capability class ──────────────────────────────────────────────────────────
+# ── Capability class ───────────────────────────────────────────────────────────
 
 class ComputerUseCapability:
     """
-    Multi-step screen control backed by gemini-2.5-computer-use-preview-10-2025.
-    Sees the screen → returns structured JSON actions → we execute them.
+    Multi-step screen control backed by Vertex AI.
+
+    Model: gemini-2.5-computer-use-preview-04-2025
+    Auth:  ADC (no api_key)
     """
 
     _SYSTEM = """
@@ -93,31 +101,28 @@ Output ONLY a JSON array of actions (no markdown fences, no prose).
 Valid action objects:
   {"type":"click",   "x":0-1000, "y":0-1000, "button":"left|right|double"}
   {"type":"type",    "text":"..."}
-  {"type":"key",     "key":"enter|escape|tab|backspace|delete|up|down|left|right|space|f1...f12|..."}
+  {"type":"key",     "key":"enter|escape|tab|backspace|delete|up|down|left|right|space|f1-f12|..."}
   {"type":"hotkey",  "modifiers":["ctrl"|"alt"|"shift"|"win"], "key":"..."}
   {"type":"scroll",  "direction":"up|down", "clicks":1-10}
   {"type":"screenshot"}          <- request fresh capture before next step
-  {"type":"done",    "message":"summary"}
+  {"type":"done",    "message":"summary of what was accomplished"}
 
-Coordinates are 0-1000 (0,0 = top-left of active window).
+Coordinates are 0-1000 (0,0 = top-left of the active window).
 Include "done" as the final action when the task is complete.
-If you are unsure of an element's location, emit {"type":"screenshot"} first.
+If uncertain about an element's location, emit {"type":"screenshot"} first.
 """
 
-    def __init__(self, api_key: str):
-        self.api_key = api_key
+    def __init__(self):
+        """No api_key — uses Vertex AI ADC via make_standard_client()."""
         self._client = None
-        if api_key:
-            try:
-                from google import genai
-                self._client = genai.Client(api_key=api_key)
-            except Exception as e:
-                logger.error(f"ComputerUse client init: {e}")
+        try:
+            self._client = make_standard_client()
+        except Exception as e:
+            logger.error(f"ComputerUse client init: {e}")
 
     # ── Action executor ───────────────────────────────────────────────────────
 
     def _exec(self, action: dict, img_w: int, img_h: int) -> str:
-        """Execute one action dict from the model."""
         t = action.get("type", "")
 
         if t == "click":
@@ -171,22 +176,21 @@ If you are unsure of an element's location, emit {"type":"screenshot"} first.
         elif t == "done":
             return f"__DONE__:{action.get('message', 'Task complete')}"
 
-        return f"Unknown action: {t}"
+        return f"Unknown action type: {t}"
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
     def execute_task(self, task_description: str, max_steps: int = 8) -> str:
         """
-        Execute a computer task autonomously.
+        Execute a computer task autonomously via Vertex AI.
         Loops up to max_steps iterations, re-capturing the screen each time.
         """
         if not _SCR_OK:
             return "Screen capture not available."
         if not self._client:
-            return "Computer Use model not available (no API key)."
+            return "Computer Use model not available (Vertex AI not configured)."
 
         from google.genai import types as gt
-
         steps: list[str] = []
         step = 0
 
@@ -197,7 +201,7 @@ If you are unsure of an element's location, emit {"type":"screenshot"} first.
             jpeg_bytes, img_w, img_h = capture
             b64 = base64.b64encode(jpeg_bytes).decode()
 
-            win_title = gw.getActiveWindowTitle() or "unknown" if _SCR_OK else "unknown"
+            win_title = (gw.getActiveWindowTitle() or "unknown") if _SCR_OK else "unknown"
             prompt = (
                 f"Active window: {win_title}\n"
                 f"Task: {task_description}\n"
@@ -216,11 +220,27 @@ If you are unsure of an element's location, emit {"type":"screenshot"} first.
                         system_instruction=self._SYSTEM,
                         temperature=0.05,
                         max_output_tokens=800,
-                    )
+                    ),
                 )
             except Exception as e:
                 logger.error(f"Computer use call failed: {e}")
-                return f"Computer use error: {e}"
+                # Fallback: try with vision model
+                try:
+                    resp = self._client.models.generate_content(
+                        model=VISION_MODEL,
+                        contents=[
+                            gt.Part(inline_data=gt.Blob(data=b64, mime_type="image/jpeg")),
+                            gt.Part(text=prompt),
+                        ],
+                        config=gt.GenerateContentConfig(
+                            system_instruction=self._SYSTEM,
+                            temperature=0.05,
+                            max_output_tokens=800,
+                        ),
+                    )
+                    logger.info("Fell back to VISION_MODEL for computer use")
+                except Exception as e2:
+                    return f"Computer use error: {e2}"
 
             raw = resp.text.strip()
             if raw.startswith("```"):
@@ -231,7 +251,7 @@ If you are unsure of an element's location, emit {"type":"screenshot"} first.
             try:
                 actions = json.loads(raw)
             except json.JSONDecodeError:
-                logger.warning(f"Bad JSON: {raw[:200]}")
+                logger.warning(f"Bad JSON from model: {raw[:200]}")
                 break
 
             if not isinstance(actions, list):
@@ -262,10 +282,8 @@ If you are unsure of an element's location, emit {"type":"screenshot"} first.
     # ── Single-click shortcut ─────────────────────────────────────────────────
 
     def click_element(self, description: str, click_type: str = "left") -> str:
-        """Find an element by description and click it (single action)."""
         if not _SCR_OK or not self._client:
             return "Not available."
-
         capture = _capture_jpeg()
         if not capture:
             return "Screen capture failed."
@@ -283,7 +301,7 @@ If you are unsure of an element's location, emit {"type":"screenshot"} first.
                         'Return ONLY JSON: {"x":0-1000,"y":0-1000} — centre of element.'
                     )),
                 ],
-                config=gt.GenerateContentConfig(temperature=0.0, max_output_tokens=60)
+                config=gt.GenerateContentConfig(temperature=0.0, max_output_tokens=60),
             )
             raw    = resp.text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
             coords = json.loads(raw)
@@ -298,7 +316,7 @@ If you are unsure of an element's location, emit {"type":"screenshot"} first.
         except Exception as e:
             return f"Could not click '{description}': {e}"
 
-    # ── ADK tool declarations ─────────────────────────────────────────────────
+    # ── ADK tool declarations ──────────────────────────────────────────────────
 
     def get_adk_tools(self) -> list:
         from google.genai import types as gt
@@ -306,9 +324,9 @@ If you are unsure of an element's location, emit {"type":"screenshot"} first.
             gt.FunctionDeclaration(
                 name="computer_use",
                 description=(
-                    "Execute a multi-step computer task by controlling the screen. "
-                    "Use for: filling forms, navigating apps, clicking through menus, "
-                    "composing documents, etc. The model sees the screen and acts."
+                    "Execute a multi-step computer task by controlling the screen "
+                    "via Vertex AI. Use for: filling forms, navigating apps, "
+                    "clicking through menus, composing documents, etc."
                 ),
                 parameters=gt.Schema(
                     type=gt.Type.OBJECT,
@@ -318,8 +336,8 @@ If you are unsure of an element's location, emit {"type":"screenshot"} first.
                         "max_steps": gt.Schema(type=gt.Type.INTEGER,
                                                description="Max steps (default 8, max 15)"),
                     },
-                    required=["task"]
-                )
+                    required=["task"],
+                ),
             ),
             gt.FunctionDeclaration(
                 name="click_element",
@@ -332,16 +350,20 @@ If you are unsure of an element's location, emit {"type":"screenshot"} first.
                         "click_type":  gt.Schema(type=gt.Type.STRING,
                                                   description="'left','right','double'"),
                     },
-                    required=["description"]
-                )
+                    required=["description"],
+                ),
             ),
         ]
 
     def handle_tool_call(self, name: str, args: dict) -> str:
         if name == "computer_use":
-            return self.execute_task(args.get("task", ""),
-                                     max_steps=min(int(args.get("max_steps", 8)), 15))
+            return self.execute_task(
+                args.get("task", ""),
+                max_steps=min(int(args.get("max_steps", 8)), 15),
+            )
         elif name == "click_element":
-            return self.click_element(args.get("description", ""),
-                                      args.get("click_type", "left"))
+            return self.click_element(
+                args.get("description", ""),
+                args.get("click_type", "left"),
+            )
         return f"Unknown tool: {name}"
