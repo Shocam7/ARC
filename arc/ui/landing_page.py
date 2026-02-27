@@ -1,247 +1,199 @@
 """
-LandingPage — ARC's entrance screen.
-User enters their name and room name before joining.
+LandingPage — Clean Google-style white entry screen with animated Gemini star.
 """
-
 import math
-
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QGraphicsOpacityEffect
-)
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve, QRect
-from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QLinearGradient, QBrush
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QPainter, QColor, QBrush, QConicalGradient, QPainterPath, QPen
 
 
-class GridBackground(QWidget):
-    """Animated cyber-grid background."""
+class GeminiStarWidget(QWidget):
+    """Animated Gemini 4-pointed star. Reused by AgentTile too."""
 
-    def __init__(self, parent=None):
+    # Google brand colours
+    BLUE   = QColor(66,  133, 244)
+    RED    = QColor(234,  67,  53)
+    YELLOW = QColor(251, 188,   4)
+    GREEN  = QColor(52,  168,  83)
+
+    def __init__(self, size: int = 80, parent=None):
         super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self._offset = 0.0
-        self._timer = QTimer(self)
+        self.setFixedSize(size, size)
+        self._phase      = 0.0   # gradient rotation angle
+        self._pulse      = 0.0   # scale pulse
+        self._opacity    = 1.0
+        self._state      = "idle"
+        self._timer      = QTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(40)
+        self._timer.start(30)
 
+    # ── State API ─────────────────────────────────────────────────────────────
+    def set_state(self, state: str):
+        """state ∈ {'idle','speaking','thinking','acting'}"""
+        self._state = state
+
+    # ── Animation ─────────────────────────────────────────────────────────────
     def _tick(self):
-        self._offset = (self._offset + 0.4) % 60
+        s = self._state
+        if s == "speaking":
+            self._phase = (self._phase + 4.0) % 360
+            self._pulse  = (self._pulse + 0.10) % (2 * math.pi)
+            self._opacity = 1.0
+        elif s == "acting":
+            self._phase = (self._phase + 2.5) % 360
+            self._pulse  = (self._pulse + 0.14) % (2 * math.pi)
+            self._opacity = 1.0
+        elif s == "thinking":
+            self._phase = (self._phase + 0.8) % 360
+            self._pulse  = (self._pulse + 0.06) % (2 * math.pi)
+            self._opacity = 0.75
+        else:  # idle — slow drift
+            self._phase = (self._phase + 0.4) % 360
+            self._pulse  = 0.0
+            self._opacity = 0.30
         self.update()
 
+    # ── Paint ─────────────────────────────────────────────────────────────────
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-
-        # Background gradient
-        grad = QLinearGradient(0, 0, 0, h)
-        grad.setColorAt(0, QColor(7, 9, 15))
-        grad.setColorAt(1, QColor(10, 14, 22))
-        p.fillRect(0, 0, w, h, grad)
-
-        # Scrolling grid lines
-        pen = QPen(QColor(0, 200, 255, 12), 1)
-        p.setPen(pen)
-        cell = 60
-        off = int(self._offset)
-
-        # Vertical lines
-        x = -(off % cell)
-        while x < w:
-            p.drawLine(int(x), 0, int(x), h)
-            x += cell
-
-        # Horizontal lines
-        y = -(off % cell)
-        while y < h:
-            p.drawLine(0, int(y), w, int(y))
-            y += cell
-
-        # Glowing center cross
-        cx, cy = w // 2, h // 2
-        glow = QColor(0, 200, 255, 30)
-        p.setPen(QPen(glow, 1))
-        p.drawLine(cx, 0, cx, h)
-        p.drawLine(0, cy, w, cy)
-
-        # Corner accent brackets
-        bracket_color = QColor(0, 200, 255, 45)
-        p.setPen(QPen(bracket_color, 1.5))
-        size = 30
-        margin = 28
-        corners = [
-            (margin, margin, 1, 1),
-            (w - margin, margin, -1, 1),
-            (margin, h - margin, 1, -1),
-            (w - margin, h - margin, -1, -1),
-        ]
-        for bx, by, dx, dy in corners:
-            p.drawLine(bx, by, bx + dx * size, by)
-            p.drawLine(bx, by, bx, by + dy * size)
-
+        self._draw(p, self.width() / 2, self.height() / 2,
+                   (min(self.width(), self.height()) / 2 - 3),
+                   self._phase, self._pulse, self._opacity)
         p.end()
 
+    @classmethod
+    def _draw(cls, painter: QPainter, cx: float, cy: float,
+              R: float, phase: float, pulse: float, opacity: float):
+        """
+        Static helper — also used by AgentTile to paint the star
+        at arbitrary positions and sizes.
+        """
+        scale  = 1.0 + 0.07 * math.sin(pulse)
+        R      = R * scale
+        S      = R * 0.38       # waist factor — matches Gemini logo proportions
 
-class GlowingCircle(QWidget):
-    """Pulsing glow sphere behind the logo."""
+        path = QPainterPath()
+        path.moveTo(cx,     cy - R)
+        path.cubicTo(cx+S,  cy-R,  cx+R, cy-S,  cx+R, cy)
+        path.cubicTo(cx+R,  cy+S,  cx+S, cy+R,  cx,   cy+R)
+        path.cubicTo(cx-S,  cy+R,  cx-R, cy+S,  cx-R, cy)
+        path.cubicTo(cx-R,  cy-S,  cx-S, cy-R,  cx,   cy-R)
+        path.closeSubpath()
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
-        self._phase = 0.0
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
-        self._timer.start(50)
+        grad = QConicalGradient(cx, cy, phase)
+        grad.setColorAt(0.00, cls.BLUE)
+        grad.setColorAt(0.25, cls.RED)
+        grad.setColorAt(0.50, cls.YELLOW)
+        grad.setColorAt(0.75, cls.GREEN)
+        grad.setColorAt(1.00, cls.BLUE)
 
-    def _tick(self):
-        self._phase += 0.06
-        self.update()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        cx = self.width() // 2
-        cy = self.height() // 2
-        base_r = 120
-        pulse = math.sin(self._phase) * 15
-        r = int(base_r + pulse)
-
-        # Multiple glow rings
-        for i, (radius, alpha) in enumerate([
-            (r + 60, 8), (r + 30, 18), (r, 35), (r - 20, 55)
-        ]):
-            glow = QColor(0, 150 + i * 15, 200 + i * 10, alpha)
-            grad = QLinearGradient(cx - radius, cy, cx + radius, cy)
-            grad.setColorAt(0, QColor(0, 0, 0, 0))
-            grad.setColorAt(0.5, glow)
-            grad.setColorAt(1, QColor(0, 0, 0, 0))
-            p.setBrush(QBrush(grad))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.drawEllipse(cx - radius, cy - radius // 2, radius * 2, radius)
-        p.end()
+        painter.save()
+        painter.setOpacity(opacity)
+        painter.setBrush(QBrush(grad))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawPath(path)
+        painter.restore()
 
 
 class LandingPage(QWidget):
-    """Landing / entry screen for ARC."""
-
-    launch_room = pyqtSignal(str, str)  # (room_name, username)
+    launch_room = pyqtSignal(str, str)   # (room_name, username)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("landing_page")
-        self._init_ui()
+        self.setStyleSheet("QWidget#landing_page { background-color: #f8f9fa; }")
+        self._build()
 
-    def _init_ui(self):
-        # Background layers
-        self._bg = GridBackground(self)
-        self._bg.resize(self.size())
+    def _build(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._glow = GlowingCircle(self)
-        self._glow.setFixedSize(500, 300)
-
-        # Main layout
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        # Center card
+        # Card
         card = QWidget()
-        card.setFixedWidth(440)
+        card.setFixedWidth(420)
         card.setStyleSheet("""
-            background-color: rgba(13, 17, 23, 0.92);
-            border: 1px solid rgba(0, 200, 255, 0.2);
-            border-radius: 20px;
+            background-color: #ffffff;
+            border: 1px solid #e8eaed;
+            border-radius: 16px;
         """)
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(48, 44, 48, 44)
-        card_layout.setSpacing(0)
-        card_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(52, 46, 52, 50)
+        cl.setSpacing(0)
 
-        # Logo
-        logo = QLabel("ARC")
-        logo.setObjectName("arc_logo")
-        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        card_layout.addWidget(logo)
+        # Animated star logo
+        row = QHBoxLayout()
+        row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._star = GeminiStarWidget(size=72)
+        self._star.set_state("speaking")   # Animate on landing
+        row.addWidget(self._star)
+        cl.addLayout(row)
+        cl.addSpacing(18)
 
-        tagline = QLabel("ARTIFICIAL REALITY COMPANION")
-        tagline.setObjectName("arc_tagline")
-        tagline.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        card_layout.addWidget(tagline)
+        # Title
+        title = QLabel("ARC")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet(
+            "color:#202124;font-size:30px;font-weight:700;"
+            "letter-spacing:-1px;background:transparent;"
+        )
+        cl.addWidget(title)
+        cl.addSpacing(4)
 
-        card_layout.addSpacing(32)
+        sub = QLabel("Artificial Reality Companion")
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub.setStyleSheet("color:#5f6368;font-size:14px;background:transparent;")
+        cl.addWidget(sub)
+        cl.addSpacing(32)
 
         # Divider
-        div = QLabel()
-        div.setFixedHeight(1)
-        div.setStyleSheet("background: rgba(0,200,255,0.12);")
-        card_layout.addWidget(div)
+        div = QWidget(); div.setFixedHeight(1)
+        div.setStyleSheet("background:#e8eaed;")
+        cl.addWidget(div)
+        cl.addSpacing(28)
 
-        card_layout.addSpacing(28)
+        # Your name
+        cl.addWidget(self._lbl("Your name"))
+        cl.addSpacing(6)
+        self._name = QLineEdit("You")
+        self._name.setObjectName("room_input")
+        self._name.setFixedHeight(46)
+        cl.addWidget(self._name)
+        cl.addSpacing(18)
 
-        # Description
-        desc = QLabel("Create a room and invite your Artificial Friends.")
-        desc.setObjectName("landing_desc")
-        desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        desc.setWordWrap(True)
-        card_layout.addWidget(desc)
+        # Room
+        cl.addWidget(self._lbl("Room name"))
+        cl.addSpacing(6)
+        self._room = QLineEdit("My Room")
+        self._room.setObjectName("room_input")
+        self._room.setFixedHeight(46)
+        self._room.returnPressed.connect(self._go)
+        cl.addWidget(self._room)
+        cl.addSpacing(30)
 
-        card_layout.addSpacing(28)
+        # Button
+        btn = QPushButton("Start new meeting")
+        btn.setObjectName("launch_btn")
+        btn.setFixedHeight(48)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.clicked.connect(self._go)
+        cl.addWidget(btn)
+        cl.addSpacing(22)
 
-        # Your name input
-        name_label = QLabel("YOUR NAME")
-        name_label.setStyleSheet("color: #4a5a6e; font-size: 10px; letter-spacing: 4px; margin-bottom: 6px;")
-        card_layout.addWidget(name_label)
+        foot = QLabel("Powered by Gemini 2.5 · Google AI Studio")
+        foot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        foot.setStyleSheet("color:#bdc1c6;font-size:11px;background:transparent;")
+        cl.addWidget(foot)
 
-        self._name_input = QLineEdit()
-        self._name_input.setObjectName("room_input")
-        self._name_input.setPlaceholderText("Enter your name...")
-        self._name_input.setText("USER")
-        card_layout.addWidget(self._name_input)
+        outer.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        card_layout.addSpacing(14)
+    def _lbl(self, text: str) -> QLabel:
+        l = QLabel(text)
+        l.setStyleSheet("color:#5f6368;font-size:12px;font-weight:500;background:transparent;")
+        return l
 
-        # Room name input
-        room_label = QLabel("ROOM ID")
-        room_label.setStyleSheet("color: #4a5a6e; font-size: 10px; letter-spacing: 4px; margin-bottom: 6px;")
-        card_layout.addWidget(room_label)
-
-        self._room_input = QLineEdit()
-        self._room_input.setObjectName("room_input")
-        self._room_input.setPlaceholderText("Name your ARC room...")
-        self._room_input.setText("NEXUS-1")
-        card_layout.addWidget(self._room_input)
-
-        card_layout.addSpacing(28)
-
-        # Launch button
-        self._launch_btn = QPushButton("ENTER THE ARC")
-        self._launch_btn.setObjectName("launch_btn")
-        self._launch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._launch_btn.clicked.connect(self._on_launch)
-        card_layout.addWidget(self._launch_btn)
-
-        card_layout.addSpacing(20)
-
-        # Version label
-        version = QLabel("v1.0 · POWERED BY GEMINI 2.0 LIVE")
-        version.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        version.setStyleSheet("color: #2a3a4e; font-size: 9px; letter-spacing: 2px;")
-        card_layout.addWidget(version)
-
-        layout.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, '_bg'):
-            self._bg.resize(self.size())
-        if hasattr(self, '_glow'):
-            self._glow.move(
-                (self.width() - self._glow.width()) // 2,
-                (self.height() - self._glow.height()) // 2 - 60
-            )
-
-    def _on_launch(self):
-        room = self._room_input.text().strip() or "NEXUS-1"
-        username = self._name_input.text().strip() or "USER"
+    def _go(self):
+        room     = self._room.text().strip() or "My Room"
+        username = self._name.text().strip() or "You"
         self.launch_room.emit(room, username)
