@@ -4,16 +4,14 @@ Manages navigation between landing page and room view.
 Owns the AudioManager, Orchestrator, and all AF agents.
 """
 
-import asyncio
 import logging
 import os
-import threading
 
-from PyQt6.QtWidgets import QMainWindow, QWidget, QStackedWidget, QMessageBox
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
+from PyQt6.QtWidgets import QMainWindow, QStackedWidget, QMessageBox
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
 
-from arc.ui.styles import ARC_STYLESHEET
+from arc.ui.styles import LANDING_STYLESHEET, ROOM_STYLESHEET
 from arc.ui.landing_page import LandingPage
 from arc.ui.room_view import RoomView
 from arc.agents.base_agent import ArtificialFriend
@@ -32,23 +30,21 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("ARC — Artificial Reality Companion")
         self.setMinimumSize(1100, 720)
         self.resize(1280, 800)
-
-        # Apply global stylesheet
-        self.setStyleSheet(ARC_STYLESHEET)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
 
         # Core services
-        self._audio_manager = AudioManager()
-        self._orchestrator = Orchestrator(api_key=api_key)
-        self._agents: dict[str, ArtificialFriend] = {}
-        self._room_view: RoomView | None = None
-        self._mic_active = True
+        self._audio    = AudioManager()
+        self._orch     = Orchestrator(api_key=api_key)
+        self._agents:  dict[str, ArtificialFriend] = {}
+        self._room:    RoomView | None = None
+        self._mic_on   = True
 
-        # Mic polling timer (sends audio to active agent)
+        # Mic → active agent @ 50Hz
         self._mic_timer = QTimer(self)
         self._mic_timer.timeout.connect(self._poll_mic)
-        self._mic_timer.setInterval(20)  # 50Hz
+        self._mic_timer.setInterval(20)
 
-        # Stack: 0=landing, 1=room
+        # Page stack
         self._stack = QStackedWidget()
         self.setCentralWidget(self._stack)
 
@@ -57,107 +53,99 @@ class MainWindow(QMainWindow):
         self._landing.launch_room.connect(self._enter_room)
         self._stack.addWidget(self._landing)
 
-        # Set style hints
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        # Apply landing stylesheet
+        self.setStyleSheet(LANDING_STYLESHEET)
 
     # ── Navigation ─────────────────────────────────────────────────────────────
 
     def _enter_room(self, room_name: str, username: str):
-        """Transition from landing page to the meeting room."""
         logger.info(f"Entering room: {room_name} as {username}")
 
-        # Create room view
-        self._room_view = RoomView(
+        self._room = RoomView(
             room_name=room_name,
             username=username,
-            orchestrator=self._orchestrator,
+            orchestrator=self._orch,
         )
-        self._room_view.leave_room.connect(self._leave_room)
-        self._room_view.agent_spawn_requested.connect(self._spawn_agent)
-        self._stack.addWidget(self._room_view)
-        self._stack.setCurrentWidget(self._room_view)
+        self._room.leave_room.connect(self._leave_room)
+        self._room.agent_spawn_requested.connect(self._spawn_agent)
+        self._stack.addWidget(self._room)
+        self._stack.setCurrentWidget(self._room)
 
-        # Start audio
-        self._audio_manager.start_mic()
-        self._audio_manager.start_playback()
+        # Switch to room stylesheet
+        self.setStyleSheet(ROOM_STYLESHEET)
+
+        self._audio.start_mic()
+        self._audio.start_playback()
         self._mic_timer.start()
-
-        logger.info(f"Room [{room_name}] entered")
+        logger.info(f"Room [{room_name}] ready")
 
     def _leave_room(self):
-        """Stop everything and return to landing page."""
         self._mic_timer.stop()
-        self._audio_manager.stop_mic()
-        self._audio_manager.stop_playback()
+        self._audio.stop_mic()
+        self._audio.stop_playback()
 
-        # Stop all agents
         for agent in list(self._agents.values()):
             agent.stop()
         self._agents.clear()
 
-        if self._room_view:
-            self._room_view.cleanup()
-            self._stack.removeWidget(self._room_view)
-            self._room_view.deleteLater()
-            self._room_view = None
+        if self._room:
+            self._room.cleanup()
+            self._stack.removeWidget(self._room)
+            self._room.deleteLater()
+            self._room = None
 
+        # Back to landing stylesheet
+        self.setStyleSheet(LANDING_STYLESHEET)
         self._stack.setCurrentWidget(self._landing)
-        # Clear orchestrator state
-        for name in list(self._orchestrator._agents.keys()):
-            self._orchestrator.unregister_agent(name)
+
+        # Reset orchestrator
+        for name in list(self._orch._agents.keys()):
+            self._orch.unregister_agent(name)
 
     # ── Agent lifecycle ────────────────────────────────────────────────────────
 
     def _spawn_agent(self, config: dict):
-        """Create, register, and start a new AF agent."""
         name = config["name"]
         if name in self._agents:
             logger.warning(f"Agent {name} already exists")
             return
-
-        # Check API key
         if not self.api_key:
-            if self._room_view:
-                self._room_view._log("❌ No GEMINI_API_KEY found. Set it in your .env file.")
+            if self._room:
+                self._room._log("❌ No GEMINI_API_KEY. Add it to .env and restart.")
             return
 
         logger.info(f"Spawning AF: {name}")
-
         agent = ArtificialFriend(
-            name=name,
-            persona=config.get("persona", ""),
-            voice=config.get("voice", "Aoede"),
-            api_key=self.api_key,
-            audio_manager=self._audio_manager,
-            parent=self,
+            name          = name,
+            persona       = config.get("persona", ""),
+            voice         = config.get("voice", "Aoede"),
+            api_key       = self.api_key,
+            audio_manager = self._audio,
+            parent        = self,
         )
-
         self._agents[name] = agent
-        self._orchestrator.register_agent(agent)
+        self._orch.register_agent(agent)
 
-        # Wire signals to room view
-        if self._room_view:
-            self._room_view.connect_agent_signals(agent)
+        if self._room:
+            self._room.connect_agent_signals(agent)
 
-        # Start the agent (launches its asyncio loop in a daemon thread)
         try:
             agent.start()
-            if self._room_view:
-                self._room_view._log(f"✅ AF [{name}] online and ready")
+            if self._room:
+                self._room._log(f"✅ {name} is online")
         except Exception as e:
-            logger.error(f"Failed to start AF [{name}]: {e}")
-            if self._room_view:
-                self._room_view._log(f"❌ Failed to start AF [{name}]: {e}")
+            logger.error(f"Failed to start {name}: {e}")
+            if self._room:
+                self._room._log(f"❌ {name} failed to start: {e}")
 
     # ── Mic polling ────────────────────────────────────────────────────────────
 
     def _poll_mic(self):
-        """Send buffered mic audio to the active agent via orchestrator."""
-        if not self._mic_active:
+        if not self._mic_on:
             return
-        chunk = self._audio_manager.get_mic_chunk(timeout=0.01)
+        chunk = self._audio.get_mic_chunk(timeout=0.01)
         if chunk:
-            self._orchestrator.dispatch_audio(chunk)
+            self._orch.dispatch_audio(chunk)
 
     # ── Cleanup ────────────────────────────────────────────────────────────────
 
@@ -165,7 +153,7 @@ class MainWindow(QMainWindow):
         self._mic_timer.stop()
         for agent in self._agents.values():
             agent.stop()
-        self._audio_manager.cleanup()
-        if self._room_view:
-            self._room_view.cleanup()
+        self._audio.cleanup()
+        if self._room:
+            self._room.cleanup()
         super().closeEvent(event)
